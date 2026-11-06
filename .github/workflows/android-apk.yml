@@ -1,0 +1,167 @@
+name: Build Android APK
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/android-apk.yml'
+      - 'android/**'
+      - 'lib/**'
+      - 'native/**'
+      - 'packages/**'
+      - 'pubspec.*'
+      - 'scripts/**'
+  workflow_dispatch:
+    inputs:
+      edition:
+        description: 'hongguojian = 红果鉴；zhenguojian = 真果鉴（全部站源）'
+        type: choice
+        default: hongguojian
+        options: [hongguojian, zhenguojian]
+      abi:
+        description: '大多数新手机选 arm64-v8a；老设备选 armeabi-v7a；模拟器选 x86_64'
+        type: choice
+        default: arm64-v8a
+        options: [arm64-v8a, armeabi-v7a, x86_64]
+      signing:
+        description: 'test 无需密钥；release 使用自己的正式密钥，支持后续覆盖升级'
+        type: choice
+        default: test
+        options: [test, release]
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      EDITION: ${{ inputs.edition || 'hongguojian' }}
+      ABI: ${{ inputs.abi || 'arm64-v8a' }}
+      SIGNING_MODE: ${{ inputs.signing || 'test' }}
+      GOPROXY: https://proxy.golang.org,direct
+      GOSUMDB: sum.golang.org
+      UPDATE_SERVER_URL: ${{ vars.UPDATE_SERVER_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate build inputs and signing configuration
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ github.event_name == 'workflow_dispatch' && inputs.signing == 'release' && secrets.ANDROID_KEYSTORE_BASE64 || '' }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ github.event_name == 'workflow_dispatch' && inputs.signing == 'release' && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+          ANDROID_KEY_ALIAS: ${{ github.event_name == 'workflow_dispatch' && inputs.signing == 'release' && secrets.ANDROID_KEY_ALIAS || '' }}
+          ANDROID_KEY_PASSWORD: ${{ github.event_name == 'workflow_dispatch' && inputs.signing == 'release' && secrets.ANDROID_KEY_PASSWORD || '' }}
+          ANDROID_CERT_SHA256: ${{ vars.ANDROID_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          case "$EDITION" in hongguojian|zhenguojian) ;; *) exit 1 ;; esac
+          case "$ABI" in arm64-v8a|armeabi-v7a|x86_64) ;; *) exit 1 ;; esac
+          case "$SIGNING_MODE" in
+            test)
+              echo '测试签名：可安装体验，但不同次构建不保证能覆盖升级。'
+              ;;
+            release)
+              for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+                if [[ -z "${!name}" ]]; then
+                  echo "::error::缺少 Actions Secret: $name；配置步骤见 docs/android-apk.md。"
+                  exit 1
+                fi
+              done
+              expected=$(printf '%s' "$ANDROID_CERT_SHA256" | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')
+              if [[ ! "$expected" =~ ^[0-9a-f]{64}$ ]]; then
+                echo '::error::请配置 Actions Variable ANDROID_CERT_SHA256，填写证书的完整 SHA-256 指纹。'
+                exit 1
+              fi
+              umask 077
+              printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/guoapp-release.jks"
+              echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/guoapp-release.jks" >> "$GITHUB_ENV"
+              ;;
+            *) exit 1 ;;
+          esac
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/go.mod
+          cache-dependency-path: native/go.sum
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.9'
+          channel: stable
+          cache: true
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-36 build-tools;36.0.0'
+          accept-android-sdk-licenses: true
+      - name: Install pinned Android NDK
+        run: sdkmanager 'ndk;28.2.13676358'
+      - name: Resolve locked Flutter dependencies
+        run: flutter pub get --enforce-lockfile
+      - name: Build one Android APK
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ github.event_name == 'workflow_dispatch' && inputs.signing == 'release' && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+          ANDROID_KEY_ALIAS: ${{ github.event_name == 'workflow_dispatch' && inputs.signing == 'release' && secrets.ANDROID_KEY_ALIAS || '' }}
+          ANDROID_KEY_PASSWORD: ${{ github.event_name == 'workflow_dispatch' && inputs.signing == 'release' && secrets.ANDROID_KEY_PASSWORD || '' }}
+        run: |
+          set -euo pipefail
+          arguments=(--abi "$ABI")
+          if [[ "$EDITION" == zhenguojian ]]; then
+            arguments+=(--all-sources)
+          fi
+          python scripts/build_android.py "${arguments[@]}"
+          git diff --exit-code -- pubspec.yaml pubspec.lock
+      - name: Verify APK signature and record download information
+        env:
+          ANDROID_CERT_SHA256: ${{ vars.ANDROID_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apks=(dist/android/*.apk)
+          if [[ ${#apks[@]} -ne 1 ]]; then
+            echo '::error::本次构建必须且只能生成一个 APK。'
+            exit 1
+          fi
+          apk=${apks[0]}
+          signature=$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$apk")
+          actual=$(printf '%s\n' "$signature" | awk -F ': ' '/Signer #1 certificate SHA-256 digest:/ { print $2; exit }')
+          actual=$(printf '%s' "$actual" | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')
+          if [[ ! "$actual" =~ ^[0-9a-f]{64}$ ]]; then
+            echo '::error::无法读取 APK 签名证书的 SHA-256 指纹。'
+            exit 1
+          fi
+          if [[ "$SIGNING_MODE" == release ]]; then
+            expected=$(printf '%s' "$ANDROID_CERT_SHA256" | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')
+            if [[ "$actual" != "$expected" ]]; then
+              echo '::error::APK 的签名证书与 ANDROID_CERT_SHA256 不一致。'
+              exit 1
+            fi
+          fi
+          target="${apk%.apk}-$SIGNING_MODE.apk"
+          mv -- "$apk" "$target"
+          {
+            echo '## Android APK'
+            printf -- '- 版本：%s；架构：%s；签名模式：%s\n' "$EDITION" "$ABI" "$SIGNING_MODE"
+            printf -- '- 文件：%s\n' "$(basename "$target")"
+            printf -- '- 签名证书 SHA-256：%s\n' "$actual"
+            printf -- '- APK SHA-256：%s\n' "$(sha256sum "$target" | cut -d ' ' -f 1)"
+            echo '- 在本次运行页面的 Artifacts 下载 ZIP，解压后安装其中唯一的 APK。'
+            if [[ "$SIGNING_MODE" == test ]]; then
+              echo '- 此包使用测试签名；长期使用和覆盖升级请选择 release 并配置自己的密钥。'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ env.EDITION }}-${{ env.ABI }}-${{ env.SIGNING_MODE }}
+          path: dist/android/*.apk
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+      - name: Remove temporary release keystore
+        if: always()
+        run: rm -f -- "$RUNNER_TEMP/guoapp-release.jks"
