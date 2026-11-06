@@ -9,6 +9,28 @@
 
 正式模式缺少配置会明确失败，不会自动退回测试签名。PR 自动构建固定为红果鉴、ARM64、测试签名，不使用正式签名 Secrets。需要其他版本、架构或正式签名时，合并工作流后手动运行。
 
+## 手动打包前自动同步上游
+
+点击 **Run workflow** 后，流程先读取 `Xanerix/guoapp:main` 的最新提交，将该提交普通合并到**当前运行仓库的 `main`**，保留 fork 自有提交。合并成功后，APK job 使用同步步骤返回的确定提交 SHA 检出代码，再安装依赖和构建；不会继续构建触发运行时的旧快照。上游在运行过程中产生的新提交由下一次运行同步。
+
+同步摘要会列出上游 SHA、目标仓库和 APK 使用的 SHA；APK 摘要也会记录代码 SHA，便于核对产物来源。多个同步步骤在同一仓库中串行执行。
+
+- 上游已包含在当前 `main` 时，使用当前 fork 的 `main` 构建，不丢弃自有改动。
+- 合并冲突、权限不足或无法确认提交包含上游时，流程报错，APK job 不会启动。请先解决冲突或权限问题后重跑；流程不强推、不重置分支。
+- PR 自动构建只验证 PR 的代码，使用只读权限，不同步或写入 `main`。只有手动打包进入自动同步步骤。
+- 同步成功但打包失败时，已合并的上游代码仍保留在 `main`，不会回滚仓库。
+
+同步 job 申请 `contents: write`，默认使用 GitHub 自动提供的 `GITHUB_TOKEN`；APK job 保持只读权限。如果仓库或组织限制 Actions 写权限，需要管理员允许该同步 job 写入；如果 `main` 有分支保护，也需要遵守相应规则。
+
+若同步报错提示无法修改 `.github/workflows/` 或内置 token 权限不足，可额外配置 Repository Secret **`UPSTREAM_SYNC_TOKEN`**：
+
+1. 在 GitHub 个人设置 **Settings → Developer settings → Personal access tokens → Fine-grained tokens** 新建 token。
+2. Resource owner 选择你自己；Repository access 只选择 `yuqiuqi/guoapp`。
+3. Repository permissions 设置 **Contents: Read and write**；同步上游工作流文件还需要 **Workflows: Read and write**。Metadata 保持默认读取。
+4. 设置合适的有效期并生成，将值保存到该仓库的 Actions Repository Secret `UPSTREAM_SYNC_TOKEN`。此 token 只提供给手动同步 job，不传给 APK 构建或 PR job。
+
+不要把个人 token 提交到仓库。默认内置 token 已能同步时，无需另外创建 token；分支保护不会因为配置个人 token 就自动失效。
+
 ## 二、免费生成正式签名密钥（只做一次）
 
 在**自己的电脑**安装 JDK 17 或更新版本，确认 `keytool -help` 能运行。如果终端找不到 `keytool`，将 JDK 的 `bin` 目录加入 PATH，或使用它的完整路径。
@@ -92,7 +114,7 @@ keytool -list -v -keystore "$HOME/guoapp-signing/guoapp-release.jks" -alias guoa
 4. `edition`：`hongguojian` 为红果鉴，`zhenguojian` 为包含全部站源的真果鉴；每次只选择一个。
 5. `abi`：大多数新手机选 `arm64-v8a`，较老的 32 位手机/电视选 `armeabi-v7a`，x86 模拟器选 `x86_64`；每次只选择一个。
 6. `signing`：先体验选 `test`；已完成 Secrets 和指纹配置后选 `release`。
-7. 点击运行，等待任务成功。在该次运行底部 **Artifacts** 下载 `apk-版本-架构-签名模式` 对应的 ZIP。
+7. 点击运行，先等待上游合并到当前仓库 `main`，再等待 APK 构建成功。在该次运行底部 **Artifacts** 下载 `apk-版本-架构-签名模式` 对应的 ZIP。
 8. 解压后得到唯一一个 APK。运行摘要还会列出文件名、APK SHA-256、签名证书 SHA-256。
 
 首次构建需要下载 Flutter、Android SDK、NDK 和依赖，耗时取决于 GitHub runner 和网络。出现红色失败时展开失败步骤查看具体原因；失败或正在运行不表示 APK 已生成。Artifact 下载通常需要登录 GitHub。
@@ -115,4 +137,4 @@ PR 创建后也会自动构建一个 ARM64 测试 APK；在 PR 的 Checks 中打
 
 ## 签名文件的处理范围
 
-正式密钥只在选用 `release` 的手动构建中从 Secrets 读取，临时还原到 runner 的临时目录，结束后清理。上传路径仅匹配 `dist/android/*.apk`，不会上传签名文件、密码或 Base64 文本。工作流权限只有 `contents: read`，不自动生成新密钥、不把密钥写回仓库、不创建 Release。
+正式密钥只在选用 `release` 的手动构建中从 Secrets 读取，临时还原到 runner 的临时目录，结束后清理。上传路径仅匹配 `dist/android/*.apk`，不会上传签名文件、密码或 Base64 文本。只有手动同步 job 拥有 `contents: write`；检查和 APK job 使用 `contents: read`，不自动生成新密钥、不把密钥写回仓库、不创建 Release。
