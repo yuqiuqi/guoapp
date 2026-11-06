@@ -32,7 +32,55 @@ permissions:
   contents: read
 
 jobs:
+  check_sync:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test upstream synchronization
+        run: node scripts/sync_upstream.test.cjs
+
+  sync_upstream:
+    if: github.event_name == 'workflow_dispatch'
+    needs: check_sync
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: android-upstream-main-${{ github.repository }}
+      cancel-in-progress: false
+    outputs:
+      commit: ${{ steps.sync.outputs.commit }}
+      upstream: ${{ steps.sync.outputs.upstream }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Merge latest upstream into this repository main
+        id: sync
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+          script: |
+            const syncUpstream = require('./scripts/sync_upstream.cjs');
+            const result = await syncUpstream({ github, ...context.repo });
+            core.setOutput('commit', result.commit);
+            core.setOutput('upstream', result.upstream);
+            await core.summary
+              .addHeading('Upstream synchronization')
+              .addTable([
+                [{ data: 'Item', header: true }, { data: 'Value', header: true }],
+                ['Upstream', `Xanerix/guoapp:main @ ${result.upstream}`],
+                ['Target', `${context.repo.owner}/${context.repo.repo}:main`],
+                ['Build commit', result.commit],
+                ['Result', result.updated ? 'Merged' : 'Already up to date'],
+              ])
+              .write();
+
   apk:
+    needs: [check_sync, sync_upstream]
+    if: ${{ always() && !cancelled() && needs.check_sync.result == 'success' && (github.event_name == 'pull_request' || needs.sync_upstream.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -45,6 +93,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && needs.sync_upstream.outputs.commit || github.sha }}
           persist-credentials: false
       - name: Validate build inputs and signing configuration
         env:
@@ -146,6 +195,7 @@ jobs:
           mv -- "$apk" "$target"
           {
             echo '## Android APK'
+            printf -- '- 代码提交：%s\n' "$(git rev-parse HEAD)"
             printf -- '- 版本：%s；架构：%s；签名模式：%s\n' "$EDITION" "$ABI" "$SIGNING_MODE"
             printf -- '- 文件：%s\n' "$(basename "$target")"
             printf -- '- 签名证书 SHA-256：%s\n' "$actual"
