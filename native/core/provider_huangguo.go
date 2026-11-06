@@ -28,6 +28,7 @@ const (
 	sourceHuangju       = "huangju"
 	sourceYeguo         = "yeguo"
 	sourceJinguoDuanju  = "jinguoduanju"
+	sourceJinguo        = "jinguo"
 	sourceDSD           = "dsd"
 	sourceCloudFront    = "cloudfront"
 	sourceSorani        = "sorani"
@@ -89,7 +90,7 @@ func splitProviderDramaID(id string) (source, sourceID string, ok bool) {
 
 func isHuangguoProviderSource(source string) bool {
 	switch canonicalProviderSource(source) {
-	case sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo, sourceHuangju, sourceYeguo, sourceJinguoDuanju, sourceDSD, sourceCloudFront, sourceSorani, sourceGuipian, sourceHanxiaoquan:
+	case sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo, sourceHuangju, sourceYeguo, sourceJinguoDuanju, sourceJinguo, sourceDSD, sourceCloudFront, sourceSorani, sourceGuipian, sourceHanxiaoquan:
 		return true
 	default:
 		return false
@@ -108,10 +109,12 @@ func canonicalProviderSource(source string) string {
 		return sourceHongguo
 	case "huangju", "huangju.net", "api.huangju.net":
 		return sourceHuangju
-	case "yeguo", "ygdj7.com", "www.ygdj7.com", "ygdj15.com", "www.ygdj15.com", "analyze.buxefaex.cc", "delta.ygrwdsgt.cc", "yeguodj.com", "www.yeguodj.com":
+	case "yeguo", "ygdj7.com", "www.ygdj7.com", "ygdj15.com", "www.ygdj15.com", "analyze.buxefaex.cc", "attract.vgbyziuz.cc", "delta.ygrwdsgt.cc", "yeguodj.com", "www.yeguodj.com":
 		return sourceYeguo
 	case "jinguoduanju", "jinguoduanju.app", "www.jinguoduanju.app", "play.jinguoduanju.app", "jgdj.app", "www.jgdj.app":
 		return sourceJinguoDuanju
+	case "jinguo":
+		return sourceJinguo
 	case "dsd", "dsd.com.se", "www.dsd.com.se":
 		return sourceDSD
 	case "cloudfront":
@@ -230,6 +233,9 @@ func (d *Downloader) GetHuangguoChapters(ctx context.Context, source, sourceID s
 		return drama.DisplayTitle(), chapters, err
 	case sourceJinguoDuanju:
 		drama, chapters, err := d.fetchJinguoDuanjuDetail(ctx, sourceID)
+		return drama.DisplayTitle(), chapters, err
+	case sourceJinguo:
+		drama, chapters, err := d.fetchJinguoDetail(ctx, sourceID)
 		return drama.DisplayTitle(), chapters, err
 	case sourceDSD:
 		drama, chapters, err := d.fetchDSDDetail(ctx, sourceID)

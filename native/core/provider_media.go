@@ -72,7 +72,7 @@ func providerSourceForURL(raw string) string {
 		return sourceHuangju
 	case host == "ygdj7.com" || host == "www.ygdj7.com" || host == "ygdj15.com" || host == "www.ygdj15.com" ||
 		host == "analyze.buxefaex.cc" || strings.HasSuffix(host, ".buxefaex.cc") ||
-		strings.HasSuffix(host, ".fzchosdi.cc") || strings.HasSuffix(host, ".lwblvxvy.cc") ||
+		strings.HasSuffix(host, ".fzchosdi.cc") || strings.HasSuffix(host, ".lwblvxvy.cc") || strings.HasSuffix(host, ".vgbyziuz.cc") ||
 		host == "delta.ygrwdsgt.cc" || host == "yeguodj.com" || host == "www.yeguodj.com":
 		return sourceYeguo
 	case host == "jinguoduanju.app" || host == "www.jinguoduanju.app" || host == "play.jinguoduanju.app" ||
@@ -146,6 +146,9 @@ func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (provi
 	}
 	if chapter.Source == sourceJinguoDuanju {
 		return d.resolveJinguoDuanjuMedia(ctx, task)
+	}
+	if chapter.Source == sourceJinguo {
+		return d.resolveJinguoMedia(ctx, task)
 	}
 	if chapter.Source == sourceDSD {
 		return d.resolveDSDMedia(ctx, task)

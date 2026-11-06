@@ -63,6 +63,8 @@ type Downloader struct {
 	yeguo                 *yeguoAPIClient
 	jinguoDuanjuOnce      sync.Once
 	jinguoDuanju          *jinguoDuanjuAPIClient
+	jinguoOnce            sync.Once
+	jinguo                *jinguoAPIClient
 	soraniOnce            sync.Once
 	sorani                *soraniAPIClient
 	dsdCatalog            dsdCatalogState
@@ -122,6 +124,7 @@ type nativeInput struct {
 	Sequence        int64                   `json:"sequence"`
 	Force           bool                    `json:"force"`
 	Version         string                  `json:"version"`
+	Account         soraniAccountInput      `json:"account"`
 }
 
 type nativeCatalogResult struct {
@@ -304,6 +307,9 @@ func NativeRequest(raw string) (result string) {
 		if errors.Is(err, errNativeLocalFile) {
 			envelope["code"] = "local_media"
 		}
+		if errors.Is(err, errSoraniLoginRequired) || errors.Is(err, errSoraniLoginExpired) {
+			envelope["code"] = "source_login"
+		}
 		var backoff *requestBackoff
 		if errors.As(err, &backoff) {
 			envelope["code"] = "source_blocked"
@@ -381,6 +387,8 @@ func nativeDispatch(input nativeInput) (any, error) {
 		return engine.cachedRecommendations(input.Category)
 	case "hongguoDevices":
 		return engine.hongguoDevices(ctx, input.Command == "register")
+	case "soraniAccount":
+		return engine.downloader.soraniAccount(ctx, input.Command, input.Account)
 	case "rankingBoards":
 		boards := []rankingBoard{}
 		for _, board := range rankingBoards {
@@ -570,7 +578,7 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 		result.HasMore = more
 		return result, nil
 	}
-	if query != "" && (source == sourceYeguo || source == sourceDSD || source == sourceJinguoDuanju) {
+	if query != "" && (source == sourceYeguo || source == sourceDSD || source == sourceJinguoDuanju || source == sourceJinguo) {
 		var items []Drama
 		var more bool
 		var err error
@@ -579,6 +587,8 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 			items, more, err = d.fetchYeguoCatalogPage(ctx, page, "", query)
 		case sourceJinguoDuanju:
 			items, more, err = d.fetchJinguoDuanjuCatalogPage(ctx, page, "", query)
+		case sourceJinguo:
+			items, more, err = d.fetchJinguoCatalogPage(ctx, page, "", query)
 		default:
 			items, more, err = d.fetchDSDCatalogPage(ctx, page, "", query)
 		}
@@ -667,6 +677,8 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 		items, result.HasMore, err = d.fetchYeguoCatalogPage(ctx, page, category, "")
 	case sourceJinguoDuanju:
 		items, result.HasMore, err = d.fetchJinguoDuanjuCatalogPage(ctx, page, category, "")
+	case sourceJinguo:
+		items, result.HasMore, err = d.fetchJinguoCatalogPage(ctx, page, category, "")
 	case sourceDSD:
 		items, result.HasMore, err = d.fetchDSDCatalogPage(ctx, page, category, "")
 	case sourceSorani:
@@ -692,7 +704,7 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 	if err != nil && len(items) == 0 {
 		return result, err
 	}
-	if len(items) == 0 && page == 1 && source != sourceHuangju && source != sourceYeguo && source != sourceJinguoDuanju && source != sourceDSD && source != sourceSorani && source != sourceGuipian && source != sourceHanxiaoquan {
+	if len(items) == 0 && page == 1 && source != sourceHuangju && source != sourceYeguo && source != sourceJinguoDuanju && source != sourceJinguo && source != sourceDSD && source != sourceSorani && source != sourceGuipian && source != sourceHanxiaoquan {
 		return result, errors.New("站源暂未返回剧集，请稍后刷新")
 	}
 	if err != nil {
@@ -732,6 +744,8 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 		raw, chapters, err = engine.downloader.fetchYeguoDetail(ctx, sourceID)
 	case sourceJinguoDuanju:
 		raw, chapters, err = engine.downloader.fetchJinguoDuanjuDetail(ctx, sourceID)
+	case sourceJinguo:
+		raw, chapters, err = engine.downloader.fetchJinguoDetail(ctx, sourceID)
 	case sourceDSD:
 		raw, chapters, err = engine.downloader.fetchDSDDetail(ctx, sourceID)
 	case sourceSorani:
@@ -768,7 +782,7 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 		}
 	}
 	drama.Source, drama.SourceID, drama.Episodes = source, sourceID, len(chapters)
-	if source == sourceHuangju || source == sourceYeguo || source == sourceJinguoDuanju {
+	if source == sourceHuangju || source == sourceYeguo || source == sourceJinguoDuanju || source == sourceJinguo {
 		drama.Episodes = max(drama.Episodes, nativeNormalize(raw).Episodes)
 	}
 	warning := ""
