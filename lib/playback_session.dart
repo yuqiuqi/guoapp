@@ -7,6 +7,7 @@ import 'package:media_kit/media_kit.dart';
 
 import 'core_bridge.dart';
 import 'danmaku_controller.dart';
+import 'danmaku_style.dart';
 import 'diary_service.dart';
 import 'local_store.dart';
 import 'models.dart';
@@ -54,12 +55,15 @@ class PlaybackSession extends ChangeNotifier {
     unawaited(_player.setVolume(_unmutedVolume));
     _loader = PlaybackLoader(repository);
     _preloader = PlaybackPreloader(repository)..addListener(_prime);
-    danmaku = DanmakuController(repository)..setEnabled(_danmakuEnabled);
+    danmaku = DanmakuController(repository)
+      ..setEnabled(_danmakuEnabled)
+      ..setBlockedWords(preferences.danmakuWords);
     store.addListener(_accessChanged);
+    store.addListener(_syncBlockedWords);
     _bind();
     _saveTimer = Timer.periodic(
       const Duration(seconds: 5),
-      (_) => saveProgress(),
+      (_) => saveProgress(quiet: true),
     );
     _healthTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (_closed || !_acceptErrors || _loading || _error != null) return;
@@ -158,6 +162,7 @@ class PlaybackSession extends ChangeNotifier {
   String? _error;
   String? _saveWarning;
   String? _savedProgressKey;
+  bool _savedQuietly = false;
   PlaybackPlan? _plan;
   PlaybackPlan? _standbyPlan;
   int _standbyIndex = -1;
@@ -199,6 +204,8 @@ class PlaybackSession extends ChangeNotifier {
   List<int> get qualities => _plan?.qualities ?? const [];
   bool get danmakuSupported => detail.drama.source == SourceSite.hongguo.id;
   bool get danmakuEnabled => _danmakuEnabled;
+  PlaybackPreferences get preferences => _preferences;
+  DanmakuStyle get danmakuStyle => DanmakuStyle.of(store.playbackPreferences);
   bool get hasPrevious => _index > 0;
   bool get hasNext => _index + 1 < detail.episodes.length;
   String get qualityLabel {
@@ -258,6 +265,11 @@ class PlaybackSession extends ChangeNotifier {
         !store.allowsSource(SourceSite.hongguo.id)) {
       danmaku.setPlan(null);
     }
+  }
+
+  void _syncBlockedWords() {
+    if (_closed) return;
+    danmaku.setBlockedWords(store.playbackPreferences.danmakuWords);
   }
 
   void _sync() {
@@ -558,6 +570,7 @@ class PlaybackSession extends ChangeNotifier {
         if (plan.url.isEmpty) throw AppFailure('站源未返回播放地址，请重试');
         await _configure(player, plan);
         await _limitCache(player, !_engaged);
+        await _selectAudio(player, true);
         _plan = plan;
         installed = true;
         _acceptErrors = true;
@@ -638,7 +651,7 @@ class PlaybackSession extends ChangeNotifier {
     _bind();
     _openedIndex = index;
     _acceptErrors = true;
-    unawaited(previous.stop().catchError((Object _) {}));
+    final stopping = previous.stop().catchError((Object _) {});
     if (previousPlan != null) unawaited(_release(previousPlan.session));
     danmaku.setPlan(plan);
     _notify();
@@ -647,6 +660,8 @@ class PlaybackSession extends ChangeNotifier {
       await _limitCache(next, false);
       await next.setVolume(volume);
       await _setRate(_rate);
+      await stopping;
+      await _selectAudio(next, true);
       if (_current(ticket) && _foreground && _playIntent) await next.play();
     } catch (_) {
       if (_current(ticket)) _queueRecovery('open_exception');
@@ -682,6 +697,7 @@ class PlaybackSession extends ChangeNotifier {
     try {
       await _configure(standby, plan);
       await _limitCache(standby, true);
+      await _selectAudio(standby, false);
       await standby.open(
         Media(plan.url, httpHeaders: plan.headers),
         play: false,
@@ -713,6 +729,12 @@ class PlaybackSession extends ChangeNotifier {
       'demuxer-max-bytes',
       '${(limited ? 4 : 32) * 1024 * 1024}',
     );
+  }
+
+  Future<void> _selectAudio(Player target, bool enabled) async {
+    final platform = target.platform;
+    if (platform is! NativePlayer || !Platform.isIOS) return;
+    await platform.setProperty('aid', enabled ? 'auto' : 'no');
   }
 
   void start(int index, {double position = 0}) {
@@ -928,6 +950,51 @@ class PlaybackSession extends ChangeNotifier {
     _notify();
   }
 
+  Future<void> setDanmakuScale(double value) async {
+    final scale = value.clamp(danmakuScaleMin, danmakuScaleMax);
+    await _savePreferences(_preferences.copyWith(danmakuScale: scale));
+    _notify();
+  }
+
+  Future<void> setDanmakuColor(int value) async {
+    await _savePreferences(_preferences.copyWith(danmakuColor: value));
+    _notify();
+  }
+
+  Future<void> setDanmakuOpacity(double value) async {
+    final opacity = value.clamp(.1, 1.0);
+    await _savePreferences(_preferences.copyWith(danmakuOpacity: opacity));
+    _notify();
+  }
+
+  Future<void> setDanmakuBold(bool value) async {
+    await _savePreferences(_preferences.copyWith(danmakuBold: value));
+    _notify();
+  }
+
+  Future<void> setDanmakuStroke(double value) async {
+    final stroke = value.clamp(danmakuStrokeMin, danmakuStrokeMax);
+    await _savePreferences(_preferences.copyWith(danmakuStroke: stroke));
+    _notify();
+  }
+
+  Future<void> setDanmakuShadow(double value) async {
+    final shadow = value.clamp(danmakuShadowMin, danmakuShadowMax);
+    await _savePreferences(_preferences.copyWith(danmakuShadow: shadow));
+    _notify();
+  }
+
+  Future<void> setDanmakuCoverage(DanmakuCoverage value) async {
+    await _savePreferences(_preferences.copyWith(danmakuCoverage: value));
+    _notify();
+  }
+
+  Future<void> setDanmakuWords(List<String> words) async {
+    final normalized = normalizeDanmakuWords(words);
+    await _savePreferences(_preferences.copyWith(danmakuWords: normalized));
+    _notify();
+  }
+
   void setForeground(bool visible) {
     if (_closed || _foreground == visible) return;
     _foreground = visible;
@@ -943,13 +1010,17 @@ class PlaybackSession extends ChangeNotifier {
     }
   }
 
-  Future<void> saveProgress() async {
+  Future<void> saveProgress({bool quiet = false}) async {
     if (!_engaged || _openedIndex < 0 || store.profileEpoch != _epoch) return;
     final position = player.state.position.inMilliseconds / 1000;
     final duration = player.state.duration.inMilliseconds / 1000;
     if (position < .1) return;
     final key = '${detail.drama.id}:$_openedIndex:$position:$duration';
-    if (_savedProgressKey == key && _saveWarning == null) return;
+    if (_savedProgressKey == key &&
+        _saveWarning == null &&
+        (quiet || !_savedQuietly)) {
+      return;
+    }
     final entry = WatchEntry(
       drama: repository.catalogUpdates.current(detail.drama),
       episode: detail.episodes[_openedIndex].number,
@@ -958,8 +1029,9 @@ class PlaybackSession extends ChangeNotifier {
       updatedAt: DateTime.now(),
     );
     try {
-      await store.saveWatch(entry);
+      await store.saveWatch(entry, quiet: quiet);
       _savedProgressKey = key;
+      _savedQuietly = quiet;
       if (_saveWarning != null) {
         _saveWarning = null;
         _notify();
@@ -978,6 +1050,7 @@ class PlaybackSession extends ChangeNotifier {
     _closed = true;
     _generation++;
     store.removeListener(_accessChanged);
+    store.removeListener(_syncBlockedWords);
     _saveTimer?.cancel();
     _healthTimer?.cancel();
     _errorTimer?.cancel();

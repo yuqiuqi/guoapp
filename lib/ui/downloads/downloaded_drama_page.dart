@@ -10,6 +10,7 @@ import '../../core_bridge.dart';
 import '../../download_collections.dart';
 import '../../download_export.dart';
 import '../../download_merge.dart';
+import '../../merge_queue.dart';
 import '../../download_overview.dart';
 import '../../local_store.dart';
 import '../../models.dart';
@@ -22,17 +23,19 @@ import '../widgets/focus_ring.dart';
 import '../widgets/motion/motion_widgets.dart';
 import '../widgets/status_view.dart';
 import 'download_actions.dart';
-import 'merge_dialog.dart';
+import 'merge_actions.dart';
 
 class DownloadedDramaPage extends StatefulWidget {
   const DownloadedDramaPage({
     super.key,
     required this.store,
     required this.downloads,
+    required this.merges,
     required this.drama,
   });
   final LocalStore store;
   final DownloadOverview downloads;
+  final MergeQueue merges;
   final Drama drama;
 
   @override
@@ -101,11 +104,17 @@ class _DownloadedDramaPageState extends State<DownloadedDramaPage> {
 
   Future<void> _merge(DownloadedDrama item, Set<String> ids) async {
     setState(() => _busy = true);
-    await mergeDownloads(context, [
-      for (final job in item.episodes)
-        if (ids.contains(job.id)) job,
+    final queued = await enqueueMerges(context, widget.merges, [
+      [
+        for (final job in item.episodes)
+          if (ids.contains(job.id)) job,
+      ],
     ]);
-    if (mounted) setState(() => _busy = false);
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      if (queued) _selection = null;
+    });
   }
 
   Future<void> _export(DownloadedDrama item, Set<String> ids) async {
@@ -776,6 +785,9 @@ class _EpisodeListState extends State<_EpisodeList> {
                   onTap: selecting
                       ? () => _toggle(index)
                       : () => widget.onPlay(index),
+                  onLongPress: selecting
+                      ? null
+                      : () => widget.onSelect({job.id}),
                 );
               },
             ),
@@ -903,11 +915,13 @@ class _EpisodeCard extends StatelessWidget {
     required this.watching,
     required this.selected,
     required this.onTap,
+    this.onLongPress,
   });
   final DownloadJob job;
   final bool watching;
   final bool? selected;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -936,6 +950,7 @@ class _EpisodeCard extends StatelessWidget {
           clipBehavior: Clip.antiAlias,
           child: InkWell(
             onTap: onTap,
+            onLongPress: onLongPress,
             child: Padding(
               padding: EdgeInsets.fromLTRB(selected == null ? 16 : 8, 8, 12, 8),
               child: Row(

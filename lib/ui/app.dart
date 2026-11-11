@@ -12,6 +12,7 @@ import '../theme_color.dart';
 import 'app_scope.dart';
 import 'device_registration.dart';
 import 'shell/app_shell.dart';
+import 'terms_page.dart';
 import 'theme/app_theme.dart';
 import 'theme/motion.dart';
 import 'theme/system_color.dart';
@@ -124,8 +125,7 @@ class _DuanjuAppState extends State<DuanjuApp> with WidgetsBindingObserver {
 
   KeyEventResult _escape(KeyEvent event) {
     if (event is! KeyDownEvent ||
-        event.logicalKey != LogicalKeyboardKey.escape &&
-            event.logicalKey != LogicalKeyboardKey.goBack) {
+        event.logicalKey != LogicalKeyboardKey.escape) {
       return KeyEventResult.ignored;
     }
     final context =
@@ -259,6 +259,7 @@ class _DuanjuAppState extends State<DuanjuApp> with WidgetsBindingObserver {
           error: widget.bootstrapError,
           onRetry: widget.onRetry,
         ),
+        LocalStore(acceptedTerms: < termsVersion) => TermsPage(store: store),
         LocalStore(locked: true) => UnlockPage(store: store),
         _ => DeviceRegistrationGate(
           store: store,

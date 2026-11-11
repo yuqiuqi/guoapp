@@ -18,6 +18,8 @@ class SourceSite {
       id == 'sorani' ||
       id == 'guipian' ||
       id == 'hanxiaoquan' ||
+      id == 'heitao' ||
+      id == 'beabox' ||
       id == 'huangguoai';
   bool get searchSuggestions => id == 'hongguo';
   String get groupId => switch (id) {
@@ -51,6 +53,8 @@ class SourceSite {
     dsd,
     SourceSite('jinguoduanju', '禁果短剧', '推荐 · 分类短剧 · 在线搜索'),
     SourceSite('jinguo', '禁果', '精选 · 最新 · 分类短剧 · 在线搜索'),
+    SourceSite('heitao', '黑桃', '分类短剧 · 在线搜索'),
+    SourceSite('beabox', '笔盒', '分类视频 · 在线搜索'),
     SourceSite('huangguo-video', '黄果视频', '视频剧集'),
     SourceSite('huangguoai', '黄果 AI', 'AI 短剧'),
     SourceSite('cloudfront', '黄果旧版', '旧 API 剧库'),
@@ -114,8 +118,10 @@ class Drama {
     this.heat = '',
     this.views = '',
     this.onlineDate = '',
+    this.score = '',
     this.tags = const [],
     this.releaseStatus = '',
+    this.badge = '',
   }) : vipStatus = vip;
   final String id;
   final String source;
@@ -130,8 +136,10 @@ class Drama {
   final String heat;
   final String views;
   final String onlineDate;
+  final String score;
   final List<String> tags;
   final String releaseStatus;
+  final String badge;
   String get releaseLabel => switch (releaseStatus) {
     'finished' || 'completed' => '已完结',
     'ongoing' => '连载中',
@@ -157,8 +165,10 @@ class Drama {
     heat: json['heat']?.toString() ?? '',
     views: json['views']?.toString() ?? '',
     onlineDate: json['onlineDate'] as String? ?? '',
+    score: json['score'] as String? ?? '',
     tags: (json['tags'] as List? ?? const []).whereType<String>().toList(),
     releaseStatus: json['releaseStatus'] as String? ?? '',
+    badge: json['badge'] as String? ?? '',
   );
   Map<String, dynamic> toJson() => {
     'metadataSchema': 1,
@@ -174,8 +184,10 @@ class Drama {
     'heat': heat,
     'views': views,
     'onlineDate': onlineDate,
+    'score': score,
     'tags': tags,
     'releaseStatus': releaseStatus,
+    'badge': badge,
   };
 
   Drama merge(Drama fresh) {
@@ -210,11 +222,13 @@ class Drama {
       heat: fresh.heat.isEmpty ? heat : fresh.heat,
       views: fresh.views.isEmpty ? views : fresh.views,
       onlineDate: fresh.onlineDate.isEmpty ? onlineDate : fresh.onlineDate,
+      score: fresh.score.isEmpty ? score : fresh.score,
       tags: fresh.tags.isEmpty ? tags : fresh.tags,
       releaseStatus:
           fresh.releaseStatus.isEmpty || fresh.releaseStatus == 'unknown'
           ? releaseStatus
           : fresh.releaseStatus,
+      badge: fresh.badge.isEmpty ? badge : fresh.badge,
     );
   }
 }
