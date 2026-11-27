@@ -35,9 +35,19 @@ venv/
 .pytest_cache/
 
 .idea/
+.vscode/
+packages/*/pubspec.lock
 *.iml
 *.log
 .DS_Store
 Thumbs.db
 desktop.ini
 .claude/settings.local.json
+
+/guoapp-sources/
+
+/native/core/bundled/*
+!/native/core/bundled/.gitkeep
+/bundled-modules/
+# Widget Preview related
+.widget_preview/

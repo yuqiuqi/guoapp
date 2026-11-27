@@ -6,30 +6,77 @@ import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
+import '../../playback_preferences.dart';
+import '../../playback_session.dart';
+import 'audio_artwork.dart';
 import 'playback_handle.dart';
 
 class PlayerVideo extends StatelessWidget {
-  const PlayerVideo({super.key, required this.handle, required this.player});
+  const PlayerVideo({
+    super.key,
+    required this.handle,
+    required this.player,
+    this.fit = VideoFit.auto,
+  });
   final PlaybackHandle handle;
   final Player player;
+  final VideoFit fit;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => StreamBuilder(
+    stream: player.stream.tracks,
+    initialData: player.state.tracks,
+    builder: (context, snapshot) {
+      final session = handle.session;
+      return session.audio || audioOnly(snapshot.requireData)
+          ? AudioArtwork(drama: session.detail.drama)
+          : _video(context);
+    },
+  );
+
+  Widget _video(BuildContext context) {
     final controller = handle.video(player);
     final video = Video(
       controller: controller,
       controls: NoVideoControls,
       fill: Colors.black,
+      fit: BoxFit.fill,
       pauseUponEnteringBackgroundMode: false,
     );
-    if (!Platform.isWindows) return video;
     final ratio = MediaQuery.devicePixelRatioOf(context);
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final box = constraints.biggest * ratio;
-        if (!box.isFinite || box.isEmpty) return video;
-        return _OutputSize(controller: controller, box: box, child: video);
-      },
+    return ColoredBox(
+      color: Colors.black,
+      child: StreamBuilder(
+        stream: player.stream.videoParams,
+        initialData: player.state.videoParams,
+        builder: (context, snapshot) => LayoutBuilder(
+          builder: (context, constraints) {
+            final box = constraints.biggest;
+            final source = videoDisplaySize(snapshot.requireData);
+            final size = source == null || !box.isFinite || box.isEmpty
+                ? box
+                : fit.size(box, source, ratio);
+            final sized = ClipRect(
+              child: OverflowBox(
+                minWidth: size.width,
+                maxWidth: size.width,
+                minHeight: size.height,
+                maxHeight: size.height,
+                child: video,
+              ),
+            );
+            final output = size * ratio;
+            if (!Platform.isWindows || !output.isFinite || output.isEmpty) {
+              return sized;
+            }
+            return _OutputSize(
+              controller: controller,
+              box: output,
+              child: sized,
+            );
+          },
+        ),
+      ),
     );
   }
 }
@@ -120,7 +167,7 @@ class _VideoOutput {
     final scale = math.min(
       1.0,
       _boxes.values
-          .map((box) => math.min(box.width / width, box.height / height))
+          .map((box) => math.max(box.width / width, box.height / height))
           .reduce(math.max),
     );
     unawaited(

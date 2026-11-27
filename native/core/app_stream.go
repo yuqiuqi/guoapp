@@ -8,14 +8,17 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -30,7 +33,9 @@ type nativeStreamAsset struct {
 }
 
 type nativeStreamSession struct {
-	credentials  *providerMediaCredentials
+	origin       string
+	credentials  *MediaCredentials
+	source       string
 	mu           sync.Mutex
 	assets       map[string]nativeStreamAsset
 	referer      string
@@ -39,14 +44,61 @@ type nativeStreamSession struct {
 	cancel       context.CancelFunc
 	lastUsed     time.Time
 	diagnosticID string
+	cencKey      []byte
+	cencMu       sync.Mutex
+	cenc         *cencLayout
 }
 
 type nativeStreamServer struct {
 	mu         sync.Mutex
+	listenerMu sync.Mutex
 	downloader *Downloader
 	address    string
 	sessions   map[string]*nativeStreamSession
 	server     *http.Server
+	lan        *http.Server
+	lanPort    int
+	lanListen  string
+}
+
+func (stream *nativeStreamServer) lanOrigin(device string) (string, error) {
+	if _, _, err := net.SplitHostPort(device); err != nil {
+		device = net.JoinHostPort(device, "80")
+	}
+	probe, err := net.Dial("udp4", device)
+	if err != nil {
+		return "", fmt.Errorf("无法确定本机在局域网中的地址：%w", err)
+	}
+	host := probe.LocalAddr().(*net.UDPAddr).IP.String()
+	_ = probe.Close()
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	if stream.lan == nil {
+		listener, err := net.Listen("tcp4", stream.lanListen)
+		if err != nil {
+			return "", fmt.Errorf("无法开启局域网投屏服务：%w", err)
+		}
+		stream.lan = &http.Server{Handler: http.HandlerFunc(stream.nativeServe), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16384}
+		stream.lanPort = listener.Addr().(*net.TCPAddr).Port
+		go func(server *http.Server) { _ = server.Serve(listener) }(stream.lan)
+	}
+	return "http://" + net.JoinHostPort(host, strconv.Itoa(stream.lanPort)), nil
+}
+
+func (stream *nativeStreamServer) lanClose() {
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	if stream.lan != nil {
+		_ = stream.lan.Close()
+		stream.lan = nil
+	}
+}
+
+func (session *nativeStreamSession) lanPlaylist(request *http.Request, body string) string {
+	if origin := "http://" + request.Host; origin != session.origin {
+		return strings.ReplaceAll(body, session.origin+"/", origin+"/")
+	}
+	return body
 }
 
 func (stream *nativeStreamServer) nativeRequest(request *http.Request) (*http.Response, error) {
@@ -72,25 +124,86 @@ func (stream *nativeStreamServer) nativeRequest(request *http.Request) (*http.Re
 var nativePlaylistURI = regexp.MustCompile(`URI="([^"]+)"`)
 
 func newNativeStreamServer(d *Downloader) (*nativeStreamServer, error) {
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		return nil, errors.New("无法初始化本机播放器")
+	stream := &nativeStreamServer{downloader: d, lanListen: ":0", sessions: map[string]*nativeStreamSession{}}
+	if err := stream.startLoopback(); err != nil {
+		return nil, err
 	}
-	stream := &nativeStreamServer{downloader: d, address: "http://" + listener.Addr().String(), sessions: map[string]*nativeStreamSession{}}
-	server := &http.Server{Handler: http.HandlerFunc(stream.nativeServe), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16384}
-	stream.server = server
-	go func() { _ = server.Serve(listener) }()
 	return stream, nil
 }
 
-func (stream *nativeStreamServer) nativeOpen(media providerMedia) (string, string) {
+// startLoopback requires listenerMu once the stream has been published.
+func (stream *nativeStreamServer) startLoopback() error {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		recordStreamListener(stream.downloader, "listen_failed", 0, err)
+		return errors.New("无法初始化本机播放器")
+	}
+	server := &http.Server{Handler: http.HandlerFunc(stream.nativeServe), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16384}
+	previous := stream.server
+	stream.server = server
+	stream.address = "http://" + listener.Addr().String()
+	port := listener.Addr().(*net.TCPAddr).Port
+	recordStreamListener(stream.downloader, "listen_started", port, nil)
+	go func() {
+		recordStreamListener(stream.downloader, "listen_exited", port, server.Serve(listener))
+	}()
+	if previous != nil {
+		_ = previous.Close()
+	}
+	return nil
+}
+
+func (stream *nativeStreamServer) ensureLoopback(ctx context.Context) error {
+	stream.listenerMu.Lock()
+	defer stream.listenerMu.Unlock()
+	// iOS can defunct a suspended app's listener without closing its descriptor.
+	dialer := net.Dialer{Timeout: 500 * time.Millisecond}
+	conn, err := dialer.DialContext(ctx, "tcp4", strings.TrimPrefix(stream.address, "http://"))
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err == nil {
+		return nil
+	}
+	_, portText, _ := net.SplitHostPort(strings.TrimPrefix(stream.address, "http://"))
+	port, _ := strconv.Atoi(portText)
+	recordStreamListener(stream.downloader, "listen_probe_failed", port, err)
+	return stream.startLoopback()
+}
+
+func recordStreamListener(d *Downloader, event string, port int, err error) {
+	level := "info"
+	message := fmt.Sprintf("port=%d", port)
+	switch {
+	case errors.Is(err, http.ErrServerClosed):
+		message += " reason=server_closed"
+	case err != nil:
+		level = "warning"
+		message += " reason=" + nativeStreamError(err)
+		var errno syscall.Errno
+		if errors.As(err, &errno) {
+			message += fmt.Sprintf(" errno=%d", errno)
+		}
+	}
+	d.recordDiagnostic(diagnosticEvent{
+		Event: "stream." + event, Level: level, Host: "127.0.0.1", Message: message,
+	})
+}
+
+func (stream *nativeStreamServer) nativeOpen(source string, media ProviderMedia) (string, string) {
 	tokenBytes := make([]byte, 24)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		panic(err)
 	}
 	token := hex.EncodeToString(tokenBytes)
-	ctx, cancel := context.WithCancel(providerMediaContext(context.Background(), media.credentials))
-	session := &nativeStreamSession{assets: map[string]nativeStreamAsset{}, referer: media.Referer, key: media.HLSKey, ctx: ctx, cancel: cancel, lastUsed: time.Now(), credentials: media.credentials, diagnosticID: nativeStreamID(token)}
+	ctx, cancel := context.WithCancel(providerMediaContext(context.Background(), media.Credentials))
+	stream.listenerMu.Lock()
+	origin := stream.address
+	stream.listenerMu.Unlock()
+	session := &nativeStreamSession{origin: origin, assets: map[string]nativeStreamAsset{}, referer: media.Referer, key: media.HLSKey, ctx: ctx, cancel: cancel, lastUsed: time.Now(), credentials: media.Credentials, source: source, diagnosticID: nativeStreamID(token)}
 	stream.mu.Lock()
 	for id, old := range stream.sessions {
 		if time.Since(old.lastUsed) > 10*time.Minute {
@@ -165,7 +278,7 @@ func (stream *nativeStreamServer) nativeAsset(token string, session *nativeStrea
 		session.assets[id] = asset
 	}
 	session.mu.Unlock()
-	return stream.address + "/" + token + "/" + id
+	return session.origin + "/" + token + "/" + id
 }
 
 func (stream *nativeStreamServer) nativeRewrite(token string, session *nativeStreamSession, body, base string) (string, error) {
@@ -186,7 +299,7 @@ func (stream *nativeStreamServer) nativeRewrite(token string, session *nativeStr
 				return ""
 			}
 			address := parsed.ResolveReference(relative).String()
-			if !isProviderHTTPMediaURL(address) {
+			if !IsProviderHTTPMediaURL(address) {
 				return ""
 			}
 			kind := "segment"
@@ -276,7 +389,7 @@ func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, reques
 		http.NotFound(writer, request)
 		return
 	}
-	ctx, cancel := context.WithCancel(providerMediaContext(request.Context(), session.credentials))
+	ctx, cancel := context.WithCancel(providerMediaContext(withProxySource(request.Context(), session.source), session.credentials))
 	defer cancel()
 	ctx = context.WithValue(ctx, nativeStreamDiagnosticKey{}, info)
 	stop := context.AfterFunc(session.ctx, cancel)
@@ -298,7 +411,7 @@ func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, reques
 			}
 			writer.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 			if request.Method == http.MethodGet {
-				_, _ = io.WriteString(writer, body)
+				_, _ = io.WriteString(writer, session.lanPlaylist(request, body))
 			}
 		} else {
 			writer.Header().Set("Content-Type", asset.contentType)
@@ -309,12 +422,16 @@ func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, reques
 		}
 		return
 	}
+	if len(session.cencKey) > 0 && asset.kind == "media" {
+		stream.nativeServeDecrypted(ctx, writer, request, session, asset)
+		return
+	}
 	upstream, err := http.NewRequestWithContext(ctx, request.Method, asset.address, nil)
 	if err != nil {
 		http.Error(writer, "媒体地址无效", http.StatusBadGateway)
 		return
 	}
-	upstream.Header.Set("User-Agent", userAgent)
+	upstream.Header.Set("User-Agent", UserAgent)
 	upstream.Header.Set("Referer", session.referer)
 	for _, name := range []string{"Range", "If-Range"} {
 		if value := request.Header.Get(name); value != "" {
@@ -376,7 +493,7 @@ func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, reques
 			return
 		}
 		writer.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
-		_, _ = io.WriteString(writer, rewritten)
+		_, _ = io.WriteString(writer, session.lanPlaylist(request, rewritten))
 		return
 	}
 	for _, name := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "ETag", "Last-Modified"} {

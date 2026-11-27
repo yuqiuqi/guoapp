@@ -6,6 +6,7 @@ import '../../download_overview.dart';
 import '../../local_store.dart';
 import '../../merge_queue.dart';
 import '../../models.dart';
+import '../../source_modules.dart';
 import '../app_scope.dart';
 import '../shell/app_shell.dart';
 import '../theme/motion.dart';
@@ -15,7 +16,6 @@ import '../widgets/drama_tile.dart';
 import '../widgets/focus_ring.dart';
 import '../widgets/motion/motion_widgets.dart';
 import '../widgets/status_view.dart';
-import '../widgets/swipe_switch.dart';
 import 'download_actions.dart';
 import 'downloaded_drama_page.dart';
 import 'merge_actions.dart';
@@ -128,6 +128,51 @@ class _DownloadsPageState extends State<DownloadsPage>
     if (mounted) setState(() => _selection = null);
   }
 
+  _View _viewFor(int index) {
+    final jobs = widget.downloads.jobs;
+    final sources = index == 2
+        ? const <SourceSite>[]
+        : downloadSources(
+            index == 0
+                ? pendingDownloads(jobs)
+                : [
+                    for (final job in jobs)
+                      if (job.completed) job,
+                  ],
+          );
+    final source = sources.any((site) => site.id == _sources[index])
+        ? _sources[index]
+        : '';
+    bool shown(Drama drama) => source.isEmpty || drama.source == source;
+    final pending = [
+      for (final job in pendingDownloads(jobs))
+        if (shown(job.drama)) job,
+    ];
+    final downloaded = [
+      for (final drama in downloadedDramas(jobs))
+        if (shown(drama.drama)) drama,
+    ];
+    return (
+      pending: pending,
+      downloaded: downloaded,
+      sources: sources,
+      source: source,
+      selection: index != _tabs.index
+          ? null
+          : _selection?.intersection(
+              index == 0
+                  ? {for (final job in pending) job.id}
+                  : {for (final item in downloaded) item.drama.id},
+            ),
+    );
+  }
+
+  Widget _page(BuildContext context, int index, _View view) => switch (index) {
+    0 => _pendingList(context, view),
+    1 => _downloadedGrid(context, view),
+    _ => _mergeList(context),
+  };
+
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: Listenable.merge([
@@ -138,62 +183,28 @@ class _DownloadsPageState extends State<DownloadsPage>
       _tabs,
     ]),
     builder: (context, _) {
-      final jobs = widget.downloads.jobs;
       final index = _tabs.index;
-      final sources = index == 2
-          ? const <SourceSite>[]
-          : downloadSources(
-              index == 0
-                  ? pendingDownloads(jobs)
-                  : [
-                      for (final job in jobs)
-                        if (job.completed) job,
-                    ],
-            );
-      final source = sources.any((site) => site.id == _sources[index])
-          ? _sources[index]
-          : '';
-      bool shown(Drama drama) => source.isEmpty || drama.source == source;
-      final pending = [
-        for (final job in pendingDownloads(jobs))
-          if (shown(job.drama)) job,
-      ];
-      final downloaded = [
-        for (final drama in downloadedDramas(jobs))
-          if (shown(drama.drama)) drama,
-      ];
-      final view = (
-        pending: pending,
-        downloaded: downloaded,
-        sources: sources,
-        source: source,
-        selection: _selection?.intersection(
-          index == 0
-              ? {for (final job in pending) job.id}
-              : {for (final item in downloaded) item.drama.id},
-        ),
-      );
+      final view = _viewFor(index);
       final body = !widget.downloads.available
           ? const StatusView(
               title: '当前用户没有下载权限',
               icon: Icons.lock_outline_rounded,
             )
-          : index == 0
-          ? _pendingList(context, view)
-          : index == 1
-          ? _downloadedGrid(context, view)
-          : _mergeList(context);
+          : _page(context, index, view);
       final touch = switch (AppScope.formFactorOf(context)) {
         FormFactor.phone || FormFactor.pad => true,
         FormFactor.window || FormFactor.television => false,
       };
-      final swiped = touch
-          ? SwipeSwitch(
-              index: index,
-              count: _tabs.length,
-              enabled: _selection == null,
-              onSwitch: _tabs.animateTo,
-              child: body,
+      final swiped = touch && widget.downloads.available
+          ? TabBarView(
+              controller: _tabs,
+              physics: _selection == null
+                  ? null
+                  : const NeverScrollableScrollPhysics(),
+              children: [
+                for (var page = 0; page < _tabs.length; page++)
+                  _page(context, page, page == index ? view : _viewFor(page)),
+              ],
             )
           : body;
       return PopScope(
@@ -249,7 +260,7 @@ class _DownloadsPageState extends State<DownloadsPage>
       : _downloadedTab && view.downloaded.isNotEmpty;
 
   Widget _editButton(_View view, {bool icon = true}) => _textButton(
-    _downloadedTab ? '批量合并' : '编辑',
+    '编辑',
     _editable(view) ? () => setState(() => _selection = {}) : null,
     icon: icon ? Icons.check_box_outlined : null,
   );
@@ -279,8 +290,51 @@ class _DownloadsPageState extends State<DownloadsPage>
     });
   }
 
-  Widget _selectionAction(_View view) =>
-      _downloadedTab ? _mergeSelectedButton(view) : _cancelButton(view);
+  Future<void> _removeSelected(_View view) async {
+    final items = [
+      for (final item in view.downloaded)
+        if (view.selection!.contains(item.drama.id)) item,
+    ];
+    final ids = [
+      for (final item in items)
+        for (final job in item.episodes) job.id,
+    ];
+    if (ids.isEmpty ||
+        !await confirmRemoval(
+          context,
+          title: '删除 ${items.length} 部剧？',
+          message: '共 ${ids.length} 集，视频文件会一起删除。',
+          action: '删除',
+        ) ||
+        !mounted) {
+      return;
+    }
+    await _run(() => removeDownloads(context, ids, done: '已删除'));
+    if (mounted) setState(() => _selection = null);
+  }
+
+  List<Widget> _selectionActions(_View view) => _downloadedTab
+      ? [_mergeSelectedButton(view), _removeSelectedButton(view)]
+      : [_cancelButton(view)];
+
+  Widget _removeSelectedButton(_View view) {
+    final colors = Theme.of(context).colorScheme;
+    final selection = view.selection!;
+    return FocusRing(
+      radius: 20,
+      child: FilledButton.icon(
+        style: FilledButton.styleFrom(
+          backgroundColor: colors.error,
+          foregroundColor: colors.onError,
+        ),
+        onPressed: selection.isEmpty || _busy
+            ? null
+            : () => _removeSelected(view),
+        icon: const Icon(Icons.delete_outline_rounded, size: 18),
+        label: const Text('删除'),
+      ),
+    );
+  }
 
   Widget _mergeSelectedButton(_View view) {
     final selection = view.selection!;
@@ -417,7 +471,17 @@ class _DownloadsPageState extends State<DownloadsPage>
           : SafeArea(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-                child: SizedBox(height: 48, child: _selectionAction(view)),
+                child: SizedBox(
+                  height: 48,
+                  child: Row(
+                    spacing: 12,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      for (final action in _selectionActions(view))
+                        Expanded(child: action),
+                    ],
+                  ),
+                ),
               ),
             ),
     );
@@ -478,7 +542,7 @@ class _DownloadsPageState extends State<DownloadsPage>
                               spacing: 8,
                               children: [
                                 _selectAll(view),
-                                _selectionAction(view),
+                                ..._selectionActions(view),
                                 _textButton(
                                   '完成',
                                   () => setState(() => _selection = null),
@@ -571,7 +635,11 @@ class _DownloadsPageState extends State<DownloadsPage>
 
   Widget _pendingBody(BuildContext context, _View view) {
     if (view.pending.isEmpty) {
-      return const StatusView(title: '没有正在下载的剧集', icon: Icons.download_rounded);
+      return StatusView(
+        title: '没有正在下载的剧集',
+        message: _missingHint(context),
+        icon: Icons.download_rounded,
+      );
     }
     final phone = AppScope.formFactorOf(context) == FormFactor.phone;
     final inset = phone ? 16.0 : 24.0;
@@ -626,12 +694,17 @@ class _DownloadsPageState extends State<DownloadsPage>
     );
   }
 
+  String? _missingHint(BuildContext context) => missingSourceHint(
+    AppScope.of(context).repository.missingSourceDownloads(),
+    '集下载',
+  );
+
   Widget _mergeList(BuildContext context) {
     final tasks = widget.merges.tasks.reversed.toList();
     if (tasks.isEmpty) {
       return const StatusView(
         title: '没有合并任务',
-        message: '在已下载的剧集里选择多集，或在「已下载」批量合并整部剧',
+        message: '在已下载的剧集里选择多集，或在「已下载」点「编辑」合并整部剧',
         icon: Icons.merge_rounded,
       );
     }
@@ -669,8 +742,9 @@ class _DownloadsPageState extends State<DownloadsPage>
 
   Widget _downloadedBody(BuildContext context, _View view) {
     if (view.downloaded.isEmpty) {
-      return const StatusView(
+      return StatusView(
         title: '没有下载完成的剧集',
+        message: _missingHint(context),
         icon: Icons.download_done_rounded,
       );
     }

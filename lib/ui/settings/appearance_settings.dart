@@ -61,6 +61,14 @@ class AppearanceSettings extends StatelessWidget {
               },
             ),
             const Divider(indent: 16, endIndent: 16),
+            SwitchTile(
+              title: '纯黑深色模式',
+              subtitle: '深色时背景改为纯黑，适合 OLED 屏幕',
+              value: store.pureBlack,
+              onChanged: (value) =>
+                  saveSetting(context, () => store.setPureBlack(value)),
+            ),
+            const Divider(indent: 16, endIndent: 16),
             TileFocus(
               builder: (focusNode) => SwitchListTile(
                 focusNode: focusNode,
@@ -102,27 +110,110 @@ class AppearanceSettings extends StatelessWidget {
                         ),
                       ],
                     ),
-                    Row(
-                      children: [
-                        for (final color in ThemeColor.values)
-                          Expanded(
-                            child: _Swatch(
-                              color: color,
-                              selected: !following && store.themeColor == color,
-                              onPressed: following
-                                  ? null
-                                  : () => saveSetting(
-                                      context,
-                                      () => store.setThemeColor(color),
-                                    ),
-                            ),
-                          ),
-                      ],
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        const colors = ThemeColor.values;
+                        final columns =
+                            constraints.maxWidth >= colors.length * 50
+                            ? colors.length
+                            : 4;
+                        return Wrap(
+                          runSpacing: 12,
+                          children: [
+                            for (final color in colors)
+                              SizedBox(
+                                width: constraints.maxWidth / columns,
+                                child: _Swatch(
+                                  color: color,
+                                  selected:
+                                      !following && store.themeColor == color,
+                                  onPressed: following
+                                      ? null
+                                      : () => saveSetting(
+                                          context,
+                                          () => store.setThemeColor(color),
+                                        ),
+                                ),
+                              ),
+                          ],
+                        );
+                      },
                     ),
                   ],
                 ),
               ),
             ),
+          ],
+        ),
+        GroupCard(
+          children: [
+            if (!AppScope.of(context).television) ...[
+              SwitchTile(
+                title: '在主页底栏显示历史',
+                subtitle: '关闭后仍可在「我的」里打开观看记录',
+                value: store.historyTab,
+                onChanged: (value) =>
+                    saveSetting(context, () => store.setHistoryTab(value)),
+              ),
+              const Divider(indent: 16, endIndent: 16),
+              SwitchTile(
+                title: '在主页显示模糊封面按钮',
+                subtitle: '发现页站源按钮左边显示眼睛按钮，点一下模糊封面，再点恢复',
+                value: store.blurCoversButton,
+                onChanged: (value) => saveSetting(
+                  context,
+                  () => store.setBlurCoversButton(value),
+                ),
+              ),
+              const Divider(indent: 16, endIndent: 16),
+              SwitchTile(
+                title: '模糊所有界面的封面',
+                subtitle: store.blurCoversButton
+                    ? '关闭后只模糊发现页的封面'
+                    : '需先打开在主页显示模糊封面按钮',
+                value: store.blurCoversButton && store.blurAllCovers,
+                onChanged: store.blurCoversButton
+                    ? (value) => saveSetting(
+                        context,
+                        () => store.setBlurAllCovers(value),
+                      )
+                    : null,
+              ),
+              const Divider(indent: 16, endIndent: 16),
+              SettingsTile(
+                title: '开屏自动模糊封面',
+                subtitle: store.blurCoversButton
+                    ? coverBlurLaunchModes[store.blurCoversLaunch]!
+                    : '需先打开在主页显示模糊封面按钮',
+                enabled: store.blurCoversButton,
+                onTap: store.blurCoversButton
+                    ? () async {
+                        final selection = await showOptionDialog(
+                          context,
+                          title: '开屏自动模糊封面',
+                          options: coverBlurLaunchModes,
+                          selected: store.blurCoversLaunch,
+                        );
+                        if (selection != null && context.mounted) {
+                          await saveSetting(
+                            context,
+                            () => store.setBlurCoversLaunch(selection),
+                          );
+                        }
+                      }
+                    : null,
+              ),
+            ],
+            if (AppScope.of(context).television)
+              SwitchTile(
+                title: '搜索用字母键盘',
+                subtitle: '开启后按确认键弹出字母键盘，可按拼音首字母搜；关闭时使用系统输入法',
+                value: store.televisionKeyboard,
+                onChanged: (value) => saveSetting(
+                  context,
+                  () => store.setTelevisionKeyboard(value),
+                ),
+              ),
           ],
         ),
         GroupCard(
@@ -145,18 +236,6 @@ class AppearanceSettings extends StatelessWidget {
                 }
               },
             ),
-            if (AppScope.of(context).television) ...[
-              const Divider(indent: 16, endIndent: 16),
-              SwitchTile(
-                title: '搜索用字母键盘',
-                subtitle: '开启后按确认键弹出字母键盘，可按拼音首字母搜；关闭时使用系统输入法',
-                value: store.televisionKeyboard,
-                onChanged: (value) => saveSetting(
-                  context,
-                  () => store.setTelevisionKeyboard(value),
-                ),
-              ),
-            ],
           ],
         ),
       ],
@@ -181,6 +260,8 @@ class _Swatch extends StatelessWidget {
       seedColor: Color(color.seed),
       brightness: theme.brightness,
     );
+    final white = color == ThemeColor.white;
+    final ring = white ? theme.colorScheme.onSurface : scheme.primary;
     return Column(
       spacing: 6,
       children: [
@@ -200,14 +281,18 @@ class _Swatch extends StatelessWidget {
               decoration: ShapeDecoration(
                 shape: CircleBorder(
                   side: BorderSide(
-                    color: selected ? scheme.primary : Colors.transparent,
+                    color: selected ? ring : Colors.transparent,
                     width: 2,
                   ),
                 ),
               ),
               child: Material(
-                color: scheme.primary,
-                shape: const CircleBorder(),
+                color: white ? Colors.white : scheme.primary,
+                shape: CircleBorder(
+                  side: white
+                      ? BorderSide(color: theme.colorScheme.outline)
+                      : BorderSide.none,
+                ),
                 clipBehavior: Clip.antiAlias,
                 child: InkWell(
                   onTap: onPressed,
@@ -216,7 +301,7 @@ class _Swatch extends StatelessWidget {
                         ? Icon(
                             Icons.check_rounded,
                             key: const ValueKey(true),
-                            color: scheme.onPrimary,
+                            color: white ? Colors.black : scheme.onPrimary,
                           )
                         : const SizedBox.shrink(key: ValueKey(false)),
                   ),

@@ -5,10 +5,13 @@ import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../app_update.dart';
+import '../core_bridge.dart';
 import '../local_store.dart';
 import 'app_scope.dart';
+import 'modules/module_update_prompt.dart';
 import 'widgets/focus_ring.dart';
 
+var _backgroundStarted = false;
 var _checked = false;
 const _manualCooldown = Duration(seconds: 30);
 DateTime? _lastManualCheck;
@@ -16,7 +19,36 @@ AppUpdate? _lastManualUpdate;
 
 enum _UpdateChoice { mute, skip, dismiss, download }
 
-Future<void> runStartupChecks(BuildContext context, LocalStore store) async {
+void startBackgroundStartupTasks(BuildContext context, LocalStore store) {
+  if (_backgroundStarted) return;
+  _backgroundStarted = true;
+  final repository = AppScope.of(context).repository;
+  unawaited(repository.updateBundledModules().catchError((_) => false));
+  if (store.shareUsage) {
+    unawaited(
+      currentAppVersion()
+          .then((current) => repository.reportUsage(current))
+          .catchError((_) {}),
+    );
+  }
+}
+
+Future<void> runStartupChecks(
+  BuildContext context,
+  LocalStore store, {
+  bool checkModules = true,
+}) async {
+  startBackgroundStartupTasks(context, store);
+  await _checkAppUpdateAtStartup(context, store);
+  if (checkModules && context.mounted) {
+    await checkModuleUpdatesAtStartup(context, store);
+  }
+}
+
+Future<void> _checkAppUpdateAtStartup(
+  BuildContext context,
+  LocalStore store,
+) async {
   if (_checked) return;
   _checked = true;
   final repository = AppScope.of(context).repository;
@@ -24,9 +56,6 @@ Future<void> runStartupChecks(BuildContext context, LocalStore store) async {
   final AppUpdate update;
   try {
     current = await currentAppVersion();
-    if (store.shareUsage) {
-      unawaited(repository.reportUsage(current).catchError((_) {}));
-    }
     if (!store.checkUpdates) return;
     final latest = await repository.checkUpdate(current);
     if (latest == null) return;
@@ -63,8 +92,14 @@ Future<void> checkUpdateManually(BuildContext context) async {
       _lastManualCheck = DateTime.now();
       _lastManualUpdate = update;
     }
-  } catch (_) {
-    messenger.showSnackBar(const SnackBar(content: Text('检查更新失败，请稍后再试')));
+  } catch (failure) {
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          failure is AppFailure ? '检查更新失败：$failure' : '检查更新失败，请稍后再试',
+        ),
+      ),
+    );
     return;
   }
   if (update == null) {
