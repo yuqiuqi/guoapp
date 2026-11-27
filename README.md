@@ -182,5 +182,3 @@ Flutter 多端独立影视应用，手机、平板、电脑和电视分别适配
 ## 开发
 
 构建、测试、架构和发布流程见 [DEVELOPMENT.md](DEVELOPMENT.md)，参与开发和编写社区站源见 [CONTRIBUTING.md](CONTRIBUTING.md)，版本更新记录见 [CHANGELOG.md](CHANGELOG.md)。
-
-只想用 GitHub Actions 生成一个可安装的 Android APK，可按 [Android 打包与免费签名配置步骤](docs/android-apk.md) 操作。支持无需密钥的测试安装，以及使用自己固定密钥的正式签名；产物在 Actions 的 Artifacts 下载。
