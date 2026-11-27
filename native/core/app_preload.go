@@ -18,7 +18,7 @@ type nativePreloadKey struct{}
 const nativePreloadLimit = 4 << 20
 
 func (engine *nativeEngine) nativePreload(ctx context.Context, input nativeInput) (nativePlan, error) {
-	ctx = context.WithValue(ctx, backgroundCatalogKey{}, true)
+	ctx = context.WithValue(ctx, BackgroundCatalogKey{}, true)
 	ctx = context.WithValue(ctx, nativePreloadKey{}, true)
 	plan, err := engine.nativeResolve(ctx, input)
 	if err != nil || plan.Local {
@@ -60,7 +60,7 @@ func (stream *nativeStreamServer) nativePrefetch(ctx context.Context, token, ent
 		}
 		visited[local] = true
 		parsed, err := url.Parse(local)
-		if err != nil || !strings.HasPrefix(local, stream.address+"/"+token+"/") {
+		if err != nil || !strings.HasPrefix(local, session.origin+"/"+token+"/") {
 			return false
 		}
 		id := strings.TrimPrefix(parsed.Path, "/"+token+"/")

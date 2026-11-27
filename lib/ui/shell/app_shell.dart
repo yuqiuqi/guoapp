@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -13,8 +14,10 @@ import '../app_scope.dart';
 import '../explore/explore_page.dart';
 import '../explore/source_actions.dart';
 import '../follow/follow_page.dart';
+import '../history/history_page.dart';
 import '../mine/mine_page.dart';
 import '../update_prompt.dart';
+import '../modules/module_install.dart';
 import '../widgets/bar_button.dart';
 import '../theme/motion.dart';
 import '../widgets/focus_ring.dart';
@@ -24,6 +27,7 @@ import '../widgets/source_bar.dart';
 enum AppTab {
   explore('发现', Icons.explore_outlined, Icons.explore),
   follow('追剧', Icons.bookmark_border_rounded, Icons.bookmark_rounded),
+  history('历史', Icons.history_rounded, Icons.history_rounded),
   mine('我的', Icons.person_outline_rounded, Icons.person_rounded);
 
   const AppTab(this.label, this.icon, this.selectedIcon);
@@ -41,18 +45,62 @@ Future<T?> openPage<T>(BuildContext context, WidgetBuilder builder) =>
       },
     ).push(MaterialPageRoute<T>(builder: builder));
 
+class ShellForeground extends InheritedWidget {
+  const ShellForeground({
+    super.key,
+    required this.foreground,
+    required super.child,
+  });
+  final bool foreground;
+
+  static bool of(BuildContext context) =>
+      context
+          .dependOnInheritedWidgetOfExactType<ShellForeground>()
+          ?.foreground ??
+      true;
+
+  @override
+  bool updateShouldNotify(ShellForeground oldWidget) =>
+      foreground != oldWidget.foreground;
+}
+
+class ShellBars extends InheritedNotifier<ValueNotifier<bool>> {
+  const ShellBars({super.key, required super.notifier, required super.child});
+
+  static bool shown(BuildContext context) =>
+      context
+          .dependOnInheritedWidgetOfExactType<ShellBars>()
+          ?.notifier
+          ?.value ??
+      true;
+}
+
+class HideOnScroll extends StatelessWidget {
+  const HideOnScroll({super.key, required this.alignment, required this.child});
+  final Alignment alignment;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => ClipRect(
+    child: AnimatedAlign(
+      alignment: alignment,
+      heightFactor: ShellBars.shown(context) ? 1 : 0,
+      duration: Motion.of(context, Motion.medium),
+      curve: Motion.standard,
+      child: child,
+    ),
+  );
+}
+
 class AppShell extends StatefulWidget {
   const AppShell({super.key, required this.store});
   final LocalStore store;
 
   @override
-  State<AppShell> createState() => _AppShellState();
+  State<AppShell> createState() => AppShellState();
 }
 
-class _AppShellState extends State<AppShell> {
-  final _heroes = [
-    for (final _ in AppTab.values) MaterialApp.createMaterialHeroController(),
-  ];
+class AppShellState extends State<AppShell> {
   final _navigators = [
     for (final _ in AppTab.values) GlobalKey<NavigatorState>(),
   ];
@@ -63,6 +111,10 @@ class _AppShellState extends State<AppShell> {
   final _header = FocusNode();
   final _televisionTabs = GlobalKey();
   final _explore = GlobalKey<ExplorePageState>();
+  static const _revealVelocity = 400.0;
+  final _barsShown = ValueNotifier(true);
+  final _scrollClock = Stopwatch()..start();
+  var _scrollVelocity = VelocityTracker.withKind(PointerDeviceKind.touch);
   var _tab = AppTab.explore;
   var _headerFocused = false;
   FocusNode? _lastFocus;
@@ -74,12 +126,25 @@ class _AppShellState extends State<AppShell> {
 
   NavigatorState? get _navigator => _navigators[_tab.index].currentState;
 
+  bool get canPopCurrentTab => _navigator?.canPop() ?? false;
+
+  Future<bool> popCurrentTab() async {
+    final navigator = _navigator;
+    if (navigator == null || !navigator.canPop()) return false;
+    return navigator.maybePop();
+  }
+
   @override
   void initState() {
     super.initState();
     FocusManager.instance.addListener(_followFocus);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) runStartupChecks(context, widget.store);
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      startBackgroundStartupTasks(context, widget.store);
+      try {
+        await offerRestoredModules(context, widget.store);
+      } catch (_) {}
+      if (mounted) await runStartupChecks(context, widget.store);
     });
   }
 
@@ -111,12 +176,10 @@ class _AppShellState extends State<AppShell> {
     for (final scroll in _tabScrolls) {
       scroll.dispose();
     }
-    for (final hero in _heroes) {
-      hero.dispose();
-    }
     _followEntry.dispose();
     _mineEntry.dispose();
     _header.dispose();
+    _barsShown.dispose();
     _exitWindow?.cancel();
     _converter?.dispose();
     _merges?.dispose();
@@ -125,7 +188,46 @@ class _AppShellState extends State<AppShell> {
     super.dispose();
   }
 
-  void _select(AppTab tab) => setState(() => _tab = tab);
+  List<AppTab> get _tabs => [
+    for (final tab in AppTab.values)
+      if (switch (tab) {
+        AppTab.history =>
+          widget.store.historyTab && !AppScope.of(context).television,
+        AppTab.explore || AppTab.follow || AppTab.mine => true,
+      })
+        tab,
+  ];
+
+  void _select(AppTab tab) {
+    _barsShown.value = true;
+    setState(() => _tab = tab);
+  }
+
+  bool _scrolled(ScrollNotification notification) {
+    final metrics = notification.metrics;
+    if (metrics.axis != Axis.vertical) return false;
+    if (notification is ScrollStartNotification) {
+      _scrollVelocity = VelocityTracker.withKind(PointerDeviceKind.touch);
+    }
+    if (metrics.pixels <= metrics.minScrollExtent) {
+      _barsShown.value = true;
+    } else if (notification is ScrollUpdateNotification &&
+        !metrics.outOfRange) {
+      _scrollVelocity.addPosition(
+        _scrollClock.elapsed,
+        Offset(0, metrics.pixels),
+      );
+      final delta = notification.scrollDelta ?? 0;
+      if (delta > 0) {
+        _barsShown.value = false;
+      } else if (delta < 0) {
+        final velocity =
+            _scrollVelocity.getVelocityEstimate()?.pixelsPerSecond.dy ?? 0;
+        if (-velocity >= _revealVelocity) _barsShown.value = true;
+      }
+    }
+    return false;
+  }
 
   void _tap(AppTab tab) {
     if (tab != _tab) return _select(tab);
@@ -206,6 +308,7 @@ class _AppShellState extends State<AppShell> {
       entryFocus: _followEntry,
       onExitUp: _tabFocus[AppTab.follow.index].requestFocus,
     ),
+    AppTab.history => HistoryPage(store: widget.store, root: true),
     AppTab.mine => MinePage(
       store: widget.store,
       downloads: _downloads!,
@@ -218,7 +321,7 @@ class _AppShellState extends State<AppShell> {
 
   @override
   Widget build(BuildContext context) {
-    final pages = NotificationListener<NavigationNotification>(
+    final stack = NotificationListener<NavigationNotification>(
       onNotification: (_) {
         setState(() {});
         return false;
@@ -229,28 +332,31 @@ class _AppShellState extends State<AppShell> {
           for (final tab in AppTab.values)
             _TabFade(
               selected: tab == _tab,
-              child: HeroControllerScope(
-                controller: _heroes[tab.index],
-                child: Navigator(
-                  key: _navigators[tab.index],
-                  routeTraversalEdgeBehavior: TraversalEdgeBehavior.parentScope,
-                  routeDirectionalTraversalEdgeBehavior:
-                      TraversalEdgeBehavior.parentScope,
-                  onGenerateInitialRoutes: (_, _) => [
-                    MaterialPageRoute<void>(
-                      builder: (_) => PrimaryScrollController(
-                        controller: _tabScrolls[tab.index],
-                        child: _root(tab),
-                      ),
+              child: Navigator(
+                key: _navigators[tab.index],
+                routeTraversalEdgeBehavior: TraversalEdgeBehavior.parentScope,
+                routeDirectionalTraversalEdgeBehavior:
+                    TraversalEdgeBehavior.parentScope,
+                onGenerateInitialRoutes: (_, _) => [
+                  MaterialPageRoute<void>(
+                    builder: (_) => PrimaryScrollController(
+                      controller: _tabScrolls[tab.index],
+                      child: _root(tab),
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
         ],
       ),
     );
+    final pages = ShellForeground(
+      foreground: ModalRoute.of(context)?.isCurrent ?? true,
+      child: stack,
+    );
     final television = AppScope.of(context).television;
+    final tabs = _tabs;
+    if (!tabs.contains(_tab)) _tab = AppTab.explore;
     final covered = _navigator?.canPop() ?? false;
     return PopScope(
       canPop:
@@ -262,23 +368,33 @@ class _AppShellState extends State<AppShell> {
         if (!didPop) _back();
       },
       child: switch (AppScope.formFactorOf(context)) {
-        FormFactor.phone => Scaffold(
-          body: pages,
-          bottomNavigationBar: covered
-              ? null
-              : NavigationBar(
-                  selectedIndex: _tab.index,
-                  onDestinationSelected: (index) => _tap(AppTab.values[index]),
-                  destinations: [
-                    for (final tab in AppTab.values)
-                      NavigationDestination(
-                        key: ValueKey('nav-${tab.name}'),
-                        icon: _badged(tab, Icon(tab.icon)),
-                        selectedIcon: _badged(tab, Icon(tab.selectedIcon)),
-                        label: tab.label,
-                      ),
-                  ],
-                ),
+        FormFactor.phone => ShellBars(
+          notifier: _barsShown,
+          child: Scaffold(
+            body: NotificationListener<ScrollNotification>(
+              onNotification: _scrolled,
+              child: pages,
+            ),
+            bottomNavigationBar: covered
+                ? null
+                : HideOnScroll(
+                    alignment: Alignment.topCenter,
+                    child: NavigationBar(
+                      height: 72,
+                      selectedIndex: tabs.indexOf(_tab),
+                      onDestinationSelected: (index) => _tap(tabs[index]),
+                      destinations: [
+                        for (final tab in tabs)
+                          NavigationDestination(
+                            key: ValueKey('nav-${tab.name}'),
+                            icon: _badged(tab, Icon(tab.icon)),
+                            selectedIcon: _badged(tab, Icon(tab.selectedIcon)),
+                            label: tab.label,
+                          ),
+                      ],
+                    ),
+                  ),
+          ),
         ),
         FormFactor.pad || FormFactor.window => _wide(pages),
         FormFactor.television => Scaffold(
@@ -303,7 +419,7 @@ class _AppShellState extends State<AppShell> {
                         final entry = switch (_tab) {
                           AppTab.follow => _followEntry,
                           AppTab.mine => _mineEntry,
-                          AppTab.explore => null,
+                          AppTab.explore || AppTab.history => null,
                         };
                         if (event is KeyUpEvent ||
                             event.logicalKey != LogicalKeyboardKey.arrowDown ||
@@ -334,7 +450,7 @@ class _AppShellState extends State<AppShell> {
       key: _televisionTabs,
       spacing: 6,
       children: [
-        for (final tab in AppTab.values)
+        for (final tab in _tabs)
           _TelevisionTab(
             tab: tab,
             selected: tab == _tab,
@@ -365,6 +481,7 @@ class _AppShellState extends State<AppShell> {
       body: Row(
         children: [
           _SideBar(
+            tabs: _tabs,
             selected: _tab,
             expanded: expanded,
             badged: _badged,
@@ -375,10 +492,12 @@ class _AppShellState extends State<AppShell> {
           ),
           Expanded(
             child: RepaintBoundary(
-              child: MediaQuery.removePadding(
-                context: context,
-                removeLeft: true,
-                child: pages,
+              child: Builder(
+                builder: (body) => MediaQuery.removePadding(
+                  context: body,
+                  removeLeft: true,
+                  child: pages,
+                ),
               ),
             ),
           ),
@@ -441,12 +560,14 @@ class _TabFade extends StatelessWidget {
 
 class _SideBar extends StatefulWidget {
   const _SideBar({
+    required this.tabs,
     required this.selected,
     required this.expanded,
     required this.badged,
     required this.onSelect,
     this.onToggle,
   });
+  final List<AppTab> tabs;
   final AppTab selected;
   final bool expanded;
   final Widget Function(AppTab tab, Widget icon) badged;
@@ -512,7 +633,7 @@ class _SideBarState extends State<_SideBar> {
                     ),
                   ),
                 ),
-                for (final tab in AppTab.values)
+                for (final tab in widget.tabs)
                   _SideItem(
                     tab: tab,
                     selected: tab == widget.selected,

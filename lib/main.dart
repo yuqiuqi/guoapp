@@ -10,14 +10,18 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'app_device.dart';
+import 'boss_key.dart';
 import 'core_bridge.dart';
 import 'diary_service.dart';
 import 'local_files.dart';
 import 'local_store.dart';
+import 'mini_edge_snap.dart';
 import 'picture_in_picture.dart';
+import 'portable_data.dart';
 import 'ui/app.dart';
 import 'ui/theme/app_theme.dart';
 import 'window_frame.dart';
+import 'window_on_top.dart';
 import 'windows_data_migration.dart';
 
 Future<void> main() async {
@@ -27,7 +31,8 @@ Future<void> main() async {
     SystemChrome.setSystemUIOverlayStyle(AppTheme.systemBars(Brightness.dark));
   }
   if (Platform.isWindows) {
-    await migrateWindowsData();
+    enablePortableData();
+    if (portableDataPath == null) await migrateWindowsData();
     await windowManager.ensureInitialized();
     await rememberWindowFrame();
   }
@@ -46,6 +51,11 @@ Future<void> main() async {
         },
       );
     } catch (_) {}
+  }
+  if (Platform.isWindows || Platform.isMacOS) {
+    await restoreWindowOnTop();
+    await restoreBossKey();
+    if (Platform.isWindows) await restoreMiniEdgeSnap();
   }
   MediaKit.ensureInitialized();
   final device = await AppDevice.detect();
@@ -89,6 +99,7 @@ class _AppBootstrapState extends State<AppBootstrap>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    DiaryService.add('[App] 生命周期：${state.name}');
     if (state == AppLifecycleState.resumed && Platform.isAndroid) {
       unawaited(_refreshDevice());
     }

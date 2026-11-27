@@ -64,7 +64,6 @@ Future<T?> showChoicePanel<T>({
     },
     action: action,
   );
-  final navigator = Navigator.of(context);
   switch (form) {
     case FormFactor.phone:
       return showModalBottomSheet<T>(
@@ -77,20 +76,10 @@ Future<T?> showChoicePanel<T>({
         builder: panel,
       );
     case FormFactor.pad || FormFactor.window:
-      final overlay =
-          navigator.overlay!.context.findRenderObject()! as RenderBox;
-      final anchor = context.findRenderObject()! as RenderBox;
-      final rect =
-          anchor.localToGlobal(Offset.zero, ancestor: overlay) & anchor.size;
-      return navigator.push(
-        _AnchoredRoute<T>(
-          anchor: rect,
-          width: grid.wideWidth,
-          builder: panel,
-          barrierLabel: MaterialLocalizations.of(
-            context,
-          ).modalBarrierDismissLabel,
-        ),
+      return showAnchoredPanel<T>(
+        context: context,
+        width: grid.wideWidth,
+        builder: panel,
       );
     case FormFactor.television:
       return showGeneralDialog<T>(
@@ -121,6 +110,27 @@ Future<T?> showChoicePanel<T>({
         ),
       );
   }
+}
+
+Future<T?> showAnchoredPanel<T>({
+  required BuildContext context,
+  required double width,
+  required WidgetBuilder builder,
+  ThemeData? theme,
+}) {
+  final navigator = Navigator.of(context);
+  final overlay = navigator.overlay!.context.findRenderObject()! as RenderBox;
+  final anchor = context.findRenderObject()! as RenderBox;
+  return navigator.push(
+    _AnchoredRoute<T>(
+      anchor:
+          anchor.localToGlobal(Offset.zero, ancestor: overlay) & anchor.size,
+      width: width,
+      builder: builder,
+      theme: theme,
+      barrierLabel: MaterialLocalizations.of(context).modalBarrierDismissLabel,
+    ),
+  );
 }
 
 class _ChoicePanel<T> extends StatelessWidget {
@@ -302,11 +312,13 @@ class _AnchoredRoute<T> extends PopupRoute<T> {
     required this.anchor,
     required this.width,
     required this.builder,
+    this.theme,
     required this.barrierLabel,
   });
   final Rect anchor;
   final double width;
   final WidgetBuilder builder;
+  final ThemeData? theme;
   @override
   final String barrierLabel;
 
@@ -319,19 +331,21 @@ class _AnchoredRoute<T> extends PopupRoute<T> {
 
   @override
   Widget buildPage(BuildContext context, _, _) {
-    final colors = Theme.of(context).colorScheme;
+    final activeTheme = theme ?? Theme.of(context);
+    final colors = activeTheme.colorScheme;
+    final panel = Material(
+      color: colors.surfaceContainerHigh,
+      elevation: 6,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: colors.outlineVariant),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Builder(builder: builder),
+    );
     return CustomSingleChildLayout(
       delegate: _AnchoredLayout(anchor, width),
-      child: Material(
-        color: colors.surfaceContainerHigh,
-        elevation: 6,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side: BorderSide(color: colors.outlineVariant),
-        ),
-        clipBehavior: Clip.antiAlias,
-        child: builder(context),
-      ),
+      child: theme != null ? Theme(data: activeTheme, child: panel) : panel,
     );
   }
 
@@ -352,25 +366,39 @@ class _AnchoredLayout extends SingleChildLayoutDelegate {
   final Rect anchor;
   final double width;
   static const _margin = 16.0;
+  static const _gap = 6.0;
+
+  bool _placeAbove(double maxHeight) {
+    final below = maxHeight - anchor.bottom - _gap - _margin;
+    final above = anchor.top - _gap - _margin;
+    return below < 220 && above > below;
+  }
 
   @override
   BoxConstraints getConstraintsForChild(BoxConstraints constraints) {
-    final top = anchor.bottom + 6;
+    final maxWidth = math.min(width, constraints.maxWidth - _margin * 2);
+    final above = _placeAbove(constraints.maxHeight);
+    final available = above
+        ? anchor.top - _gap - _margin
+        : constraints.maxHeight - anchor.bottom - _gap - _margin;
     return BoxConstraints(
-      maxWidth: math.min(width, constraints.maxWidth - _margin * 2),
-      minWidth: math.min(width, constraints.maxWidth - _margin * 2),
-      maxHeight: math.max(0, constraints.maxHeight - top - _margin),
+      maxWidth: maxWidth,
+      minWidth: maxWidth,
+      maxHeight: math.max(0, available),
     );
   }
 
   @override
-  Offset getPositionForChild(Size size, Size childSize) => Offset(
-    (anchor.right - childSize.width).clamp(
+  Offset getPositionForChild(Size size, Size childSize) {
+    final x = (anchor.right - childSize.width).clamp(
       _margin,
       math.max(_margin, size.width - childSize.width - _margin),
-    ),
-    anchor.bottom + 6,
-  );
+    );
+    final y = _placeAbove(size.height)
+        ? math.max(_margin, anchor.top - _gap - childSize.height)
+        : anchor.bottom + _gap;
+    return Offset(x.toDouble(), y.toDouble());
+  }
 
   @override
   bool shouldRelayout(_AnchoredLayout oldDelegate) =>
