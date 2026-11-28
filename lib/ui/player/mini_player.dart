@@ -6,12 +6,14 @@ import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../../picture_in_picture.dart';
+import '../../desktop_player_bindings.dart';
 import '../../playback_session.dart';
 import '../widgets/contained_slider.dart';
 import '../widgets/focus_ring.dart';
 import 'playback_handle.dart';
 import 'player_surface.dart';
 import 'player_video.dart';
+import 'player_input.dart';
 
 bool playerVisible(AppLifecycleState? state) =>
     state == null ||
@@ -73,6 +75,10 @@ class MiniWindowView extends StatefulWidget {
 }
 
 class _MiniWindowViewState extends State<MiniWindowView> {
+  late final _inputs = PlayerInputController(
+    session: () => _session,
+    scope: PlayerInputScope.mini,
+  );
   final _focus = FocusNode(debugLabel: 'miniWindow');
   bool _hover = false;
   double? _seekValue;
@@ -94,15 +100,18 @@ class _MiniWindowViewState extends State<MiniWindowView> {
   }
 
   KeyEventResult _key(FocusNode _, KeyEvent event) {
-    if (event is! KeyDownEvent) return KeyEventResult.ignored;
-    switch (event.logicalKey) {
-      case LogicalKeyboardKey.space || LogicalKeyboardKey.mediaPlayPause:
-        _session.togglePlayback();
-      case LogicalKeyboardKey.escape:
-        widget.onRestore();
-      default:
-        return KeyEventResult.ignored;
+    final down = event is KeyDownEvent;
+    final repeat = down || event is KeyRepeatEvent;
+    if (!repeat) return KeyEventResult.ignored;
+    if (event.logicalKey == LogicalKeyboardKey.escape) {
+      if (down) widget.onRestore();
+      return KeyEventResult.handled;
     }
+    final action = _inputs.bindings.resolveKey(event, PlayerInputScope.mini);
+    if (action == null) {
+      return KeyEventResult.ignored;
+    }
+    if (down || action.repeats) _inputs.invoke(action);
     return KeyEventResult.handled;
   }
 
@@ -134,8 +143,15 @@ class _MiniWindowViewState extends State<MiniWindowView> {
   );
 
   Widget _body(BuildContext context, {required bool playing}) {
+    return PlayerPointerRegion(
+      controller: _inputs,
+      child: _bodyContent(context, playing: playing),
+    );
+  }
+
+  Widget _bodyContent(BuildContext context, {required bool playing}) {
     final session = _session;
-    final visible = _hover || !playing || _seekValue != null;
+    final visible = _hover || session.paused || _seekValue != null;
     return Material(
       color: Colors.black,
       child: Stack(

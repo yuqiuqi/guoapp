@@ -28,11 +28,13 @@ import 'backup_actions.dart';
 import 'boss_key_tile.dart';
 import 'diary_view.dart';
 import 'settings_rows.dart';
+import 'player_bindings_settings.dart';
 import 'storage_view.dart';
 
 enum SettingsGroup {
   appearance('外观', Icons.palette_outlined),
   playback('播放', Icons.play_arrow_rounded),
+  bindings('控制', Icons.keyboard_outlined),
   danmaku('弹幕', Icons.subtitles_outlined),
   slacking('摸鱼', Icons.set_meal_outlined),
   download('下载', Icons.download_rounded),
@@ -46,8 +48,11 @@ enum SettingsGroup {
   final String label;
   final IconData icon;
 
-  bool get visible =>
-      this != slacking || Platform.isWindows || Platform.isMacOS;
+  bool visibleFor({required bool television}) => switch (this) {
+    bindings => desktopPlatform && !television,
+    slacking => Platform.isWindows || Platform.isMacOS,
+    _ => true,
+  };
 }
 
 typedef OpenSubpage = void Function(String title, WidgetBuilder body);
@@ -107,6 +112,7 @@ class SettingsSection extends StatelessWidget {
             children: switch (group) {
               SettingsGroup.playback => _playback(context),
               SettingsGroup.danmaku => _danmaku(context),
+              SettingsGroup.bindings => [PlayerBindingsSettings(store: store)],
               SettingsGroup.slacking => _slacking(context),
               SettingsGroup.download => _download(context),
               SettingsGroup.storage => _storage(),
@@ -349,7 +355,7 @@ class SettingsSection extends StatelessWidget {
             ),
           ],
         ),
-      if (Platform.isWindows || Platform.isMacOS)
+      if (Platform.isWindows || Platform.isMacOS || Platform.isLinux)
         SettingsCard(
           children: [
             ValueListenableBuilder(
@@ -370,7 +376,7 @@ class SettingsSection extends StatelessWidget {
   List<Widget> _slacking(BuildContext context) => [
     SettingsCard(
       children: [
-        const BossKeyTile(),
+        const BossKeySwitchTile(),
         if (Platform.isWindows)
           ValueListenableBuilder(
             valueListenable: miniEdgeSnap,

@@ -189,24 +189,6 @@ class _PlaybackPageState extends State<PlaybackPage> {
     if (mounted) Navigator.pop(context);
   }
 
-  KeyEventResult _key(FocusNode _, KeyEvent event) {
-    final key = event.logicalKey;
-    final size = MediaQuery.sizeOf(context);
-    final form = AppScope.formFactorOf(context);
-    if (!desktopPlatform ||
-        form != FormFactor.window && form != FormFactor.pad ||
-        _padFullscreen.value ||
-        _windowFullscreen ||
-        size.width > size.height ||
-        key != LogicalKeyboardKey.f11 &&
-            key != LogicalKeyboardKey.enter &&
-            key != LogicalKeyboardKey.numpadEnter) {
-      return KeyEventResult.ignored;
-    }
-    if (event is KeyDownEvent) _padFullscreen.value = true;
-    return KeyEventResult.handled;
-  }
-
   void _padFullscreenChanged() {
     _applyPadFullscreen(_padFullscreen.value);
     setState(() {});
@@ -244,7 +226,6 @@ class _PlaybackPageState extends State<PlaybackPage> {
           node: _pageScope,
           autofocus: true,
           descendantsAreFocusable: !ios || !shown,
-          onKeyEvent: _key,
           child: Offstage(
             offstage: shown,
             child: MediaQuery(
@@ -289,17 +270,20 @@ class _PlaybackPageState extends State<PlaybackPage> {
     if (desktopPlatform) {
       final size = MediaQuery.sizeOf(context);
       return switch (form) {
+        FormFactor.phone when _padFullscreen.value => _padPage(context, mini),
         FormFactor.phone
             when _wideVideo &&
                 !widget.store.playbackPreferences.portraitStyleForWide =>
           LandscapePlayerPage(
             store: widget.store,
             handle: widget.handle,
+            onFullscreen: () => _padFullscreen.value = true,
             onMiniWindow: mini,
           ),
         FormFactor.phone => PortraitPlayerPage(
           store: widget.store,
           handle: widget.handle,
+          onShortcutFullscreen: () => _padFullscreen.value = true,
           onMiniWindow: mini,
         ),
         FormFactor.pad => _padPage(context, mini),
@@ -365,6 +349,9 @@ class _PlaybackPageState extends State<PlaybackPage> {
             store: widget.store,
             handle: widget.handle,
             onFullscreen: _wideVideo ? () => _padFullscreen.value = true : null,
+            onShortcutFullscreen: desktopPlatform
+                ? () => _padFullscreen.value = true
+                : null,
             onMiniWindow: mini,
           );
   }

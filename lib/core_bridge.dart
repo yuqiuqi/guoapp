@@ -32,6 +32,15 @@ String _nativeRequest(String body) {
   final DynamicLibrary library;
   if (Platform.isAndroid) {
     library = DynamicLibrary.open('libduanju_core.so');
+  } else if (Platform.isLinux) {
+    final bundled = path.join(
+      path.dirname(Platform.resolvedExecutable),
+      'lib',
+      'libduanju_core.so',
+    );
+    library = DynamicLibrary.open(
+      File(bundled).existsSync() ? bundled : 'libduanju_core.so',
+    );
   } else if (Platform.isWindows) {
     library = DynamicLibrary.open(
       path.join(path.dirname(Platform.resolvedExecutable), 'duanju_core.dll'),
@@ -39,7 +48,7 @@ String _nativeRequest(String body) {
   } else if (Platform.isIOS || Platform.isMacOS) {
     library = DynamicLibrary.process();
   } else {
-    throw UnsupportedError('当前支持 Android、iOS、Windows 和 macOS');
+    throw UnsupportedError('当前支持 Android、iOS、Windows、macOS 和 Linux');
   }
   final request = library.lookupFunction<_NativeRequest, _DartRequest>(
     'DuanjuRequest',
@@ -156,6 +165,7 @@ abstract class AppRepository {
   Future<Drama?> supplementMetadata(Drama drama) async => null;
   Future<List<DramaSeason>> seasons(Drama drama) async => const [];
   Future<Drama> followCheck(Drama drama) async => (await detail(drama)).drama;
+  Future<List<DramaSeason>> followSeasons(Drama drama) async => seasons(drama);
   Future<CatalogPage> recommendations(
     String source,
     String genre, {
@@ -480,6 +490,19 @@ class NativeRepository extends AppRepository {
       'drama': drama.toJson(),
     });
     return Drama.fromJson(Map<String, dynamic>.from(result['drama'] as Map));
+  }
+
+  @override
+  Future<List<DramaSeason>> followSeasons(Drama drama) async {
+    _authorize(drama.source);
+    final result = await _call({
+      'action': 'followSeasons',
+      'drama': drama.toJson(),
+    });
+    return [
+      for (final row in result['items'] as List? ?? const [])
+        DramaSeason.fromJson(Map<String, dynamic>.from(row as Map)),
+    ];
   }
 
   @override
@@ -828,6 +851,7 @@ class NativeRepository extends AppRepository {
               'detail',
               'seasons',
               'followCheck',
+              'followSeasons',
               'resolve',
               'fallback',
             }.contains(input['action'])

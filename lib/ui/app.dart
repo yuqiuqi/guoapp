@@ -14,6 +14,7 @@ import '../theme_color.dart';
 import 'app_scope.dart';
 import 'cover_blur.dart';
 import 'device_registration.dart';
+import 'player/player_input.dart';
 import 'shell/app_shell.dart';
 import 'terms_page.dart';
 import 'theme/app_theme.dart';
@@ -107,7 +108,7 @@ class _DuanjuAppState extends State<DuanjuApp> with WidgetsBindingObserver {
     final key = event.logicalKey;
     return key == LogicalKeyboardKey.tab ||
             focusedTextField() == null &&
-                !keyboardControlsFocused() &&
+                !keyboardControlsFocused(event) &&
                 _focusKeys.contains(key)
         ? KeyEventResult.handled
         : KeyEventResult.ignored;
@@ -144,7 +145,7 @@ class _DuanjuAppState extends State<DuanjuApp> with WidgetsBindingObserver {
         keyboard.isControlPressed ||
         keyboard.isAltPressed ||
         keyboard.isMetaPressed ||
-        keyboardControlsFocused() ||
+        keyboardControlsFocused(event) ||
         (focusedTextField()?.widget.maxLines ?? 1) != 1) {
       return KeyEventResult.ignored;
     }
@@ -202,7 +203,11 @@ class _DuanjuAppState extends State<DuanjuApp> with WidgetsBindingObserver {
   }
 
   void _pointerDown(PointerDownEvent event) {
-    if (!desktopPlatform || event.buttons != kBackMouseButton) return;
+    if (!desktopPlatform ||
+        event.buttons != kBackMouseButton ||
+        PlayerPointerClaim.isClaimed(event)) {
+      return;
+    }
     _navigateBack();
   }
 

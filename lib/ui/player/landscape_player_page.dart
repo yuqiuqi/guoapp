@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 
 import '../../app_device.dart';
+import '../../desktop_player_bindings.dart';
 import '../../local_store.dart';
 import '../../models.dart';
 import '../../playback_preferences.dart';
@@ -32,6 +33,7 @@ import 'player_surface.dart';
 import 'player_video.dart';
 import 'swipe_controls.dart';
 import 'window_fullscreen.dart';
+import 'player_input.dart';
 
 enum _Panel { episodes, settings, speed, quality, fit }
 
@@ -437,41 +439,65 @@ class _LandscapePlayerPageState extends State<LandscapePlayerPage>
       data: dark,
       child: Builder(builder: (context) => _video(context, full)),
     );
-    return PopScope(
-      canPop: !full && !_selecting && _panel == null && !_session.locked,
-      onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) _back(full);
-      },
-      child: AnnotatedRegion<SystemUiOverlayStyle>(
-        value: full
-            ? AppTheme.systemBars(Brightness.dark)
-            : AppTheme.systemBars(theme.brightness).copyWith(
-                statusBarIconBrightness: Brightness.light,
-                statusBarBrightness: Brightness.dark,
-              ),
-        child: full
-            ? Scaffold(backgroundColor: Colors.black, body: video)
-            : Scaffold(
-                backgroundColor: theme.colorScheme.surface,
-                body: Column(
-                  children: [
-                    ColoredBox(
-                      color: Colors.black,
-                      child: SizedBox(
-                        width: double.infinity,
-                        height: MediaQuery.paddingOf(context).top,
-                      ),
-                    ),
-                    AspectRatio(aspectRatio: 16 / 9, child: video),
-                    Expanded(child: _details(context)),
-                  ],
+    return DesktopPlayerShortcuts(
+      store: widget.store,
+      controller: _inputs,
+      repeatSeek: false,
+      child: PopScope(
+        canPop: !full && !_selecting && _panel == null && !_session.locked,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop) _back(full);
+        },
+        child: AnnotatedRegion<SystemUiOverlayStyle>(
+          value: full
+              ? AppTheme.systemBars(Brightness.dark)
+              : AppTheme.systemBars(theme.brightness).copyWith(
+                  statusBarIconBrightness: Brightness.light,
+                  statusBarBrightness: Brightness.dark,
                 ),
-              ),
+          child: full
+              ? Scaffold(backgroundColor: Colors.black, body: video)
+              : Scaffold(
+                  backgroundColor: theme.colorScheme.surface,
+                  body: Column(
+                    children: [
+                      ColoredBox(
+                        color: Colors.black,
+                        child: SizedBox(
+                          width: double.infinity,
+                          height: MediaQuery.paddingOf(context).top,
+                        ),
+                      ),
+                      AspectRatio(aspectRatio: 16 / 9, child: video),
+                      Expanded(child: _details(context)),
+                    ],
+                  ),
+                ),
+        ),
       ),
     );
   }
 
   Widget _video(BuildContext context, bool full) {
+    return PlayerPointerRegion(
+      controller: _inputs,
+      enabled: _panel == null,
+      child: _videoBody(context, full),
+    );
+  }
+
+  late final _inputs = PlayerInputController(
+    session: () => _session,
+    scope: PlayerInputScope.video,
+    onHint: _say,
+    onFullscreen:
+        widget.onFullscreen ??
+        () => _rotate(
+          MediaQuery.sizeOf(context).width > MediaQuery.sizeOf(context).height,
+        ),
+  );
+
+  Widget _videoBody(BuildContext context, bool full) {
     final session = _session;
     final locked = session.locked;
     final visible = !locked && (_visible || _pinned);
@@ -665,6 +691,9 @@ class _LandscapePlayerPageState extends State<LandscapePlayerPage>
 
   Widget _miniControls(BuildContext context) {
     final session = _session;
+    final padding = MediaQuery.paddingOf(context);
+    final left = padding.left + 4;
+    final right = padding.right + 4;
     return Stack(
       fit: StackFit.expand,
       children: [
@@ -681,8 +710,8 @@ class _LandscapePlayerPageState extends State<LandscapePlayerPage>
           ),
         ),
         Positioned(
-          left: 4,
-          right: 4,
+          left: left,
+          right: right,
           top: 0,
           height: 48,
           child: Row(
@@ -702,8 +731,8 @@ class _LandscapePlayerPageState extends State<LandscapePlayerPage>
           ),
         ),
         Positioned(
-          left: 4,
-          right: 4,
+          left: left,
+          right: right,
           bottom: 4,
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -749,6 +778,8 @@ class _LandscapePlayerPageState extends State<LandscapePlayerPage>
     final padding = MediaQuery.viewPaddingOf(context);
     final left = math.max(padding.left, 20.0);
     final right = math.max(padding.right, 20.0);
+    final top = math.max(padding.top, 8.0);
+    final bottom = math.max(padding.bottom, 8.0);
     const shadow = [Shadow(color: Color(0x66000000), blurRadius: 2)];
     final ready = session.ready;
     return Stack(
@@ -777,7 +808,7 @@ class _LandscapePlayerPageState extends State<LandscapePlayerPage>
         Positioned(
           left: left,
           right: right,
-          top: 8,
+          top: top,
           height: 56,
           child: Row(
             children: [
@@ -863,14 +894,14 @@ class _LandscapePlayerPageState extends State<LandscapePlayerPage>
         Positioned(
           left: left + 8,
           right: right + 8,
-          bottom: 60,
+          bottom: bottom + 52,
           height: 28,
           child: _progress(context, thumb: 8),
         ),
         Positioned(
           left: left,
           right: right,
-          bottom: 8,
+          bottom: bottom,
           height: 48,
           child: Row(
             children: [

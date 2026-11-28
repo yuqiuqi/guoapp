@@ -200,7 +200,7 @@ bool FlutterWindow::OnCreate() {
                     DeclineAccessibilityQueries, 0, 0);
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
-    this->Show();
+    ShowWindow(GetHandle(), restore_maximized_ ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL);
   });
 
   // Flutter can complete the first frame before the "show window" callback is
@@ -337,12 +337,34 @@ flutter::EncodableValue FlutterWindow::ExitMiniWindow() {
 
 flutter::EncodableValue FlutterWindow::WindowFrame() {
   HWND window = GetHandle();
-  if (fullscreen_ || mini_ || IsZoomed(window) || IsIconic(window)) {
+  WINDOWPLACEMENT placement{};
+  placement.length = sizeof(placement);
+  if (mini_) {
+    placement = placement_before_mini_;
+  } else if (fullscreen_) {
+    placement = placement_before_fullscreen_;
+  } else if (!GetWindowPlacement(window, &placement)) {
     return flutter::EncodableValue();
   }
+  const bool minimized = placement.showCmd == SW_SHOWMINIMIZED;
+  const bool maximized = placement.showCmd == SW_SHOWMAXIMIZED ||
+      (minimized && (placement.flags & WPF_RESTORETOMAXIMIZED));
   RECT frame;
-  GetWindowRect(window, &frame);
+  if (mini_ || fullscreen_ || maximized || minimized) {
+    frame = placement.rcNormalPosition;
+    MONITORINFO monitor{};
+    monitor.cbSize = sizeof(monitor);
+    if (GetMonitorInfo(MonitorFromRect(&frame, MONITOR_DEFAULTTONEAREST),
+                       &monitor)) {
+      OffsetRect(&frame, monitor.rcWork.left - monitor.rcMonitor.left,
+                 monitor.rcWork.top - monitor.rcMonitor.top);
+    }
+  } else if (!GetWindowRect(window, &frame)) {
+    return flutter::EncodableValue();
+  }
   flutter::EncodableMap values;
+  values[flutter::EncodableValue("maximized")] =
+      flutter::EncodableValue(static_cast<int32_t>(maximized));
   values[flutter::EncodableValue("left")] =
       flutter::EncodableValue(static_cast<int32_t>(frame.left));
   values[flutter::EncodableValue("top")] =
@@ -366,11 +388,16 @@ bool FlutterWindow::SetWindowFrame(const flutter::EncodableMap& args) {
   const int title = static_cast<int>(std::lround(40 * WindowScale(window)));
   RECT strip{*left, *top, *left + *width, *top + std::min(*height, title)};
   if (!MonitorFromRect(&strip, MONITOR_DEFAULTTONULL)) {
+    restore_maximized_ = false;
     return true;
   }
+  restore_maximized_ = BoolArgument(args, "maximized");
   for (int pass = 0; pass < 2; ++pass) {
     SetWindowPos(window, nullptr, *left, *top, *width, *height,
                  SWP_NOZORDER | SWP_NOACTIVATE);
+  }
+  if (restore_maximized_ && IsWindowVisible(window)) {
+    ShowWindow(window, SW_SHOWMAXIMIZED);
   }
   return true;
 }
@@ -430,6 +457,9 @@ void FlutterWindow::KeepMiniAspect(WPARAM edge, RECT* frame) {
 }
 
 void FlutterWindow::OnDestroy() {
+  HMODULE ffmpeg_runtime = nullptr;
+  GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN, L"libffmpegkit.dll",
+                     &ffmpeg_runtime);
   UnregisterHotKey(GetHandle(), kBossKeyId);
   media_controls_.reset();
   device_channel_.reset();

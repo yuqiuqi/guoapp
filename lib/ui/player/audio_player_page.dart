@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 
+import '../../desktop_player_bindings.dart';
 import '../../local_store.dart';
 import '../../models.dart';
 import '../../playback_preferences.dart';
@@ -27,6 +28,7 @@ import 'playback_sheets.dart';
 import 'player_home_button.dart';
 import 'player_surface.dart';
 import 'portrait_player_page.dart';
+import 'player_input.dart';
 
 const _seekStep = Duration(seconds: 10);
 
@@ -47,6 +49,11 @@ class AudioPlayerPage extends StatefulWidget {
 
 class _AudioPlayerPageState extends State<AudioPlayerPage>
     with WidgetsBindingObserver {
+  late final _inputs = PlayerInputController(
+    session: () => _session,
+    scope: PlayerInputScope.audio,
+    seekStep: _seekStep.inSeconds,
+  );
   final List<StreamSubscription<dynamic>> _subscriptions = [];
   Player? _bound;
   double? _seekValue;
@@ -123,21 +130,6 @@ class _AudioPlayerPageState extends State<AudioPlayerPage>
     } catch (_) {
       _saveFailed();
     }
-  }
-
-  void _seekBy(Duration offset) {
-    final state = _session.player.state;
-    if (!_session.ready || state.duration <= Duration.zero) return;
-    final target = state.position + offset;
-    unawaited(
-      _session.seekTo(
-        target < Duration.zero
-            ? Duration.zero
-            : target > state.duration
-            ? state.duration
-            : target,
-      ),
-    );
   }
 
   Future<void> _openSettings({BuildContext? anchor}) {
@@ -248,7 +240,8 @@ class _AudioPlayerPageState extends State<AudioPlayerPage>
   }
 
   Future<void> _switchSeason(DramaSeason season) async {
-    if (_session.switchingSeason || season.drama.id == _session.detail.drama.id) {
+    if (_session.switchingSeason ||
+        season.drama.id == _session.detail.drama.id) {
       return;
     }
     if (!await _session.playSeason(season) && mounted) {
@@ -362,28 +355,12 @@ class _AudioPlayerPageState extends State<AudioPlayerPage>
       data: playerTheme(context),
       child: Scaffold(
         backgroundColor: Colors.black,
-        body: CallbackShortcuts(
-          bindings: {
-            const SingleActivator(LogicalKeyboardKey.space):
-                _session.togglePlayback,
-            const SingleActivator(LogicalKeyboardKey.arrowLeft): () =>
-                _seekBy(-_seekStep),
-            const SingleActivator(LogicalKeyboardKey.arrowRight): () =>
-                _seekBy(_seekStep),
-            const SingleActivator(LogicalKeyboardKey.arrowUp): () =>
-                _session.changeVolume(5),
-            const SingleActivator(LogicalKeyboardKey.arrowDown): () =>
-                _session.changeVolume(-5),
-            const SingleActivator(LogicalKeyboardKey.keyM): _session.toggleMute,
-            const SingleActivator(LogicalKeyboardKey.pageUp): () {
-              if (_session.hasPrevious) unawaited(_session.previous());
-            },
-            const SingleActivator(LogicalKeyboardKey.pageDown): () {
-              if (_session.hasNext) unawaited(_session.next());
-            },
-          },
-          child: Focus(
-            autofocus: true,
+        body: DesktopPlayerShortcuts(
+          store: widget.store,
+          controller: _inputs,
+          child: PlayerPointerRegion(
+            controller: _inputs,
+            wheel: false,
             child: Stack(
               fit: StackFit.expand,
               children: [
@@ -427,8 +404,8 @@ class _AudioPlayerPageState extends State<AudioPlayerPage>
             children: [
               _artwork(fade: true),
               Positioned(
-                left: 0,
-                right: 0,
+                left: padding.left,
+                right: padding.right,
                 top: padding.top,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -439,7 +416,12 @@ class _AudioPlayerPageState extends State<AudioPlayerPage>
           ),
         ),
         Padding(
-          padding: EdgeInsets.fromLTRB(24, 8, 24, 12 + padding.bottom),
+          padding: EdgeInsets.fromLTRB(
+            24 + padding.left,
+            8,
+            24 + padding.right,
+            12 + padding.bottom,
+          ),
           child: _panel(wide: false),
         ),
       ],
@@ -605,7 +587,9 @@ class _AudioPlayerPageState extends State<AudioPlayerPage>
                     inset: 12,
                     onSelectionChanged: () {},
                     onPick: (index) {
-                      if (index != session.index) unawaited(session.play(index));
+                      if (index != session.index) {
+                        unawaited(session.play(index));
+                      }
                     },
                   ),
                 ),
@@ -737,6 +721,13 @@ class _AudioPlayerPageState extends State<AudioPlayerPage>
   }
 
   Widget _artwork({required bool fade, double? maxHeight}) {
+    return PlayerPointerRegion(
+      controller: _inputs,
+      child: _artworkBody(fade: fade, maxHeight: maxHeight),
+    );
+  }
+
+  Widget _artworkBody({required bool fade, double? maxHeight}) {
     if (_session.error case final error?) {
       return PlaybackFailure(session: _session, error: error);
     }
@@ -802,15 +793,8 @@ class _AudioPlayerPageState extends State<AudioPlayerPage>
         builder: (context) => _progress(),
       ),
       const SizedBox(height: 14),
-      _transport(
-        wide: wide,
-        hasSidebar: hasSidebar,
-        sidebarOpen: sidebarOpen,
-      ),
-      if (wide && !_touch) ...[
-        const SizedBox(height: 14),
-        _volumeBar(),
-      ],
+      _transport(wide: wide, hasSidebar: hasSidebar, sidebarOpen: sidebarOpen),
+      if (wide && !_touch) ...[const SizedBox(height: 14), _volumeBar()],
       const SizedBox(height: 16),
       _actions(wide: wide),
     ],
@@ -1083,9 +1067,7 @@ class _AudioPlayerPageState extends State<AudioPlayerPage>
           color: sidebarOpen
               ? Theme.of(context).colorScheme.primary
               : Colors.white,
-          tooltip: hasSidebar
-              ? (sidebarOpen ? '收起选集' : '展开选集')
-              : '选集',
+          tooltip: hasSidebar ? (sidebarOpen ? '收起选集' : '展开选集') : '选集',
         ),
       ],
     );
