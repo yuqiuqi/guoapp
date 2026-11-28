@@ -12,11 +12,16 @@ on:
       - 'scripts/**'
   workflow_dispatch:
     inputs:
-      edition:
-        description: 'hongguojian = 红果鉴；zhenguojian = 真果鉴（全部站源）'
+      package_name:
+        description: '覆盖旧真果鉴选 com.guoapp.all；旧红果鉴选 com.guoapp.phoenix；新安装可选 com.guoapp.app'
         type: choice
-        default: hongguojian
-        options: [hongguojian, zhenguojian]
+        default: com.guoapp.all
+        options: [com.guoapp.all, com.guoapp.phoenix, com.guoapp.app]
+      bundled_module:
+        description: 'none = 安装后自行添加模块；hongguo = 仅在已获授权并配置部署密钥时内置红果'
+        type: choice
+        default: none
+        options: [none, hongguo]
       abi:
         description: '大多数新手机选 arm64-v8a；老设备选 armeabi-v7a；模拟器选 x86_64'
         type: choice
@@ -84,7 +89,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
-      EDITION: ${{ inputs.edition || 'hongguojian' }}
+      PACKAGE_NAME: ${{ inputs.package_name || 'com.guoapp.all' }}
+      BUNDLE_MODE: ${{ inputs.bundled_module || 'none' }}
+      MODULE_UPDATE_URL: ${{ vars.MODULE_UPDATE_URL }}
+      MODULE_UPDATE_PUBLIC_KEY: ${{ vars.MODULE_UPDATE_PUBLIC_KEY }}
       ABI: ${{ inputs.abi || 'arm64-v8a' }}
       SIGNING_MODE: ${{ inputs.signing || 'test' }}
       GOPROXY: https://proxy.golang.org,direct
@@ -95,6 +103,41 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && needs.sync_upstream.outputs.commit || github.sha }}
           persist-credentials: false
+      - name: Check upstream Android build contract
+        run: |
+          set -euo pipefail
+          case "$PACKAGE_NAME" in com.guoapp.all|com.guoapp.phoenix|com.guoapp.app) ;; *) exit 1 ;; esac
+          case "$BUNDLE_MODE" in none|hongguo) ;; *) exit 1 ;; esac
+          python3 scripts/build_android.py --help | grep -q -- '--abi'
+          grep -q 'BUNDLED_MODULES' scripts/app_build.py
+          grep -q 'PACKAGE_NAME' android/app/build.gradle.kts
+      - name: Check authorized module access
+        if: github.event_name == 'workflow_dispatch' && inputs.bundled_module == 'hongguo'
+        env:
+          HONGGUO_DEPLOY_KEY: ${{ secrets.HONGGUO_DEPLOY_KEY }}
+        run: |
+          if [[ -z "$HONGGUO_DEPLOY_KEY" ]]; then
+            echo '::error::内置红果需要上游模块仓库授权及 HONGGUO_DEPLOY_KEY；也可以选择 none。'
+            exit 1
+          fi
+      - name: Checkout authorized bundled module
+        if: github.event_name == 'workflow_dispatch' && inputs.bundled_module == 'hongguo'
+        uses: actions/checkout@v4
+        with:
+          repository: guoapp-modules/hongguo
+          ssh-key: ${{ secrets.HONGGUO_DEPLOY_KEY }}
+          path: bundled-modules/hongguo
+          persist-credentials: false
+      - name: Configure bundled modules
+        run: |
+          set -euo pipefail
+          if [[ "$BUNDLE_MODE" == hongguo ]]; then
+            test -s bundled-modules/hongguo/manifest.json
+            test -s bundled-modules/hongguo/main.js
+            echo 'BUNDLED_MODULES=bundled-modules/hongguo' >> "$GITHUB_ENV"
+          else
+            echo 'BUNDLED_MODULES=' >> "$GITHUB_ENV"
+          fi
       - name: Validate build inputs and signing configuration
         env:
           ANDROID_KEYSTORE_BASE64: ${{ github.event_name == 'workflow_dispatch' && inputs.signing == 'release' && secrets.ANDROID_KEYSTORE_BASE64 || '' }}
@@ -104,7 +147,6 @@ jobs:
           ANDROID_CERT_SHA256: ${{ vars.ANDROID_CERT_SHA256 }}
         run: |
           set -euo pipefail
-          case "$EDITION" in hongguojian|zhenguojian) ;; *) exit 1 ;; esac
           case "$ABI" in arm64-v8a|armeabi-v7a|x86_64) ;; *) exit 1 ;; esac
           case "$SIGNING_MODE" in
             test)
@@ -159,11 +201,7 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ github.event_name == 'workflow_dispatch' && inputs.signing == 'release' && secrets.ANDROID_KEY_PASSWORD || '' }}
         run: |
           set -euo pipefail
-          arguments=(--abi "$ABI")
-          if [[ "$EDITION" == zhenguojian ]]; then
-            arguments+=(--all-sources)
-          fi
-          python scripts/build_android.py "${arguments[@]}"
+          python scripts/build_android.py --abi "$ABI"
           git diff --exit-code -- pubspec.yaml pubspec.lock
       - name: Verify APK signature and record download information
         env:
@@ -177,6 +215,12 @@ jobs:
             exit 1
           fi
           apk=${apks[0]}
+          badging=$("$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk")
+          package=$(printf '%s\n' "$badging" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
+          if [[ "$package" != "$PACKAGE_NAME" ]]; then
+            echo '::error::APK 包名与选择的包名不一致。'
+            exit 1
+          fi
           signature=$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$apk")
           actual=$(printf '%s\n' "$signature" | awk -F ': ' '/Signer #1 certificate SHA-256 digest:/ { print $2; exit }')
           actual=$(printf '%s' "$actual" | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')
@@ -196,7 +240,7 @@ jobs:
           {
             echo '## Android APK'
             printf -- '- 代码提交：%s\n' "$(git rev-parse HEAD)"
-            printf -- '- 版本：%s；架构：%s；签名模式：%s\n' "$EDITION" "$ABI" "$SIGNING_MODE"
+            printf -- '- 应用包名：%s；架构：%s；签名模式：%s；内置模块：%s\n' "$PACKAGE_NAME" "$ABI" "$SIGNING_MODE"
             printf -- '- 文件：%s\n' "$(basename "$target")"
             printf -- '- 签名证书 SHA-256：%s\n' "$actual"
             printf -- '- APK SHA-256：%s\n' "$(sha256sum "$target" | cut -d ' ' -f 1)"
@@ -207,7 +251,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
-          name: apk-${{ env.EDITION }}-${{ env.ABI }}-${{ env.SIGNING_MODE }}
+          name: apk-${{ env.PACKAGE_NAME }}-${{ env.ABI }}-${{ env.SIGNING_MODE }}-${{ env.BUNDLE_MODE }}
           path: dist/android/*.apk
           if-no-files-found: error
           retention-days: 14

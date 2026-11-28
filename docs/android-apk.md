@@ -7,7 +7,21 @@
 - **先体验：**选择 `test`，无需创建密钥或配置 Secrets。它是 release 模式编译、测试密钥签名的可安装 APK，文件名以 `-test.apk` 结尾。不同次构建的测试密钥可能不同，不保证覆盖已有安装。
 - **长期使用：**先按下面步骤生成并保存自己的密钥，再选择 `release`。APK 必须通过你配置的证书指纹核验，文件名以 `-release.apk` 结尾。后续升级继续使用同一密钥。
 
-正式模式缺少配置会明确失败，不会自动退回测试签名。PR 自动构建固定为红果鉴、ARM64、测试签名，不使用正式签名 Secrets。需要其他版本、架构或正式签名时，合并工作流后手动运行。
+正式模式缺少配置会明确失败，不会自动退回测试签名。PR 自动构建固定为旧真果鉴兼容包名 `com.guoapp.all`、ARM64、无内置模块、测试签名，不使用正式签名 Secrets 或模块部署密钥。其他包名、架构、内置模块或正式签名在合并后手动选择。
+
+## 上游模块化与包名迁移
+
+新版小果影视不再提供红果鉴/真果鉴两种编译版本，旧参数 `--all-sources` 已移除。站源在应用的 **我的 → 模块** 中按需安装；仅安装你有权使用且信任的模块。
+
+| package_name | 用途 |
+|---|---|
+| `com.guoapp.all`（默认） | 尝试覆盖旧真果鉴 |
+| `com.guoapp.phoenix` | 尝试覆盖旧红果鉴 |
+| `com.guoapp.app` | 上游新版默认包名，适合新安装 |
+
+覆盖升级同时要求原安装包名、签名证书匹配，且构建号不降低。旧版使用自定义包名时以上选项不保证兼容；升级前请先导出备份。新版数据迁移尚需实机验证。
+
+`bundled_module=none` 不需要额外仓库权限；APK 本身不内置站源，安装后需要自行配置模块。`hongguo` 仅适用于已经获得上游私有模块仓库 guoapp-modules/hongguo 访问授权的用户：按上游要求配置只读部署密钥 `HONGGUO_DEPLOY_KEY`。未配置密钥或无权读取仓库时构建会明确失败，不会尝试绕过权限。可选的仓库变量 `MODULE_UPDATE_URL` 和 `MODULE_UPDATE_PUBLIC_KEY` 应仅设置为可信的模块更新服务及其公开验签密钥。
 
 ## 手动打包前自动同步上游
 
@@ -110,22 +124,22 @@ keytool -list -v -keystore "$HOME/guoapp-signing/guoapp-release.jks" -alias guoa
 
 1. 合并包含 `.github/workflows/android-apk.yml` 的 PR，使工作流进入默认分支。
 2. 打开仓库 **Actions**。如果 fork 的 Actions 尚未启用，先按页面提示启用。
-3. 左侧选择 **Build Android APK**，点击 **Run workflow**，选择分支及参数。
-4. `edition`：`hongguojian` 为红果鉴，`zhenguojian` 为包含全部站源的真果鉴；每次只选择一个。
+3. 左侧选择 **Build Android APK**，点击 **Run workflow**，选择 `main` 分支及参数。
+4. `package_name`：按上方迁移表选择；`bundled_module` 默认 `none`，已获得模块仓库授权才选择 `hongguo`。
 5. `abi`：大多数新手机选 `arm64-v8a`，较老的 32 位手机/电视选 `armeabi-v7a`，x86 模拟器选 `x86_64`；每次只选择一个。
 6. `signing`：先体验选 `test`；已完成 Secrets 和指纹配置后选 `release`。
-7. 点击运行，先等待上游合并到当前仓库 `main`，再等待 APK 构建成功。在该次运行底部 **Artifacts** 下载 `apk-版本-架构-签名模式` 对应的 ZIP。
+7. 点击运行，先等待上游合并到当前仓库 `main`，再等待 APK 构建成功。在该次运行底部 **Artifacts** 下载 `apk-包名-架构-签名模式-模块模式` 对应的 ZIP。
 8. 解压后得到唯一一个 APK。运行摘要还会列出文件名、APK SHA-256、签名证书 SHA-256。
 
 首次构建需要下载 Flutter、Android SDK、NDK 和依赖，耗时取决于 GitHub runner 和网络。出现红色失败时展开失败步骤查看具体原因；失败或正在运行不表示 APK 已生成。Artifact 下载通常需要登录 GitHub。
 
-PR 创建后也会自动构建一个 ARM64 测试 APK；在 PR 的 Checks 中打开 **Build Android APK** 对应运行即可下载，无需先合并。但 fork PR 可能需要仓库维护者批准运行。
+PR 创建后也会自动构建一个无内置模块的 ARM64 测试 APK；在 PR 的 Checks 中打开 **Build Android APK** 对应运行即可下载，无需先合并。但 fork PR 可能需要仓库维护者批准运行。
 
 ## 六、在 Android 手机上安装与更新
 
 1. 将解压出的 `.apk` 下载或传到手机，用文件管理器打开。
 2. 系统提示时，允许**当前用于打开 APK 的浏览器或文件管理器**“安装未知应用”，再确认安装。安装完成后可关闭该来源的权限。
-3. 正常更新使用相同版本类型（红果鉴/真果鉴）、相同签名的新版 APK 覆盖安装，并保持构建号递增。
+3. 正常更新使用相同应用包名、相同签名的新版 APK 覆盖安装，并保持构建号递增。旧版到新版的站源及数据迁移需另外验证。
 
 常见提示：
 
@@ -138,3 +152,5 @@ PR 创建后也会自动构建一个 ARM64 测试 APK；在 PR 的 Checks 中打
 ## 签名文件的处理范围
 
 正式密钥只在选用 `release` 的手动构建中从 Secrets 读取，临时还原到 runner 的临时目录，结束后清理。上传路径仅匹配 `dist/android/*.apk`，不会上传签名文件、密码或 Base64 文本。只有手动同步 job 拥有 `contents: write`；检查和 APK job 使用 `contents: read`，不自动生成新密钥、不把密钥写回仓库、不创建 Release。
+
+注意：手动打包自动同步并执行上游构建代码，正式签名时上游代码可能接触构建环境中的签名材料。请仅信任经过审查的上游提交；若不能确认其安全性，先用 test 构建，不要提供正式签名或模块部署密钥。
